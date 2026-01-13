@@ -57,97 +57,84 @@ ai_interpreter = AIRuleInterpreter()
 # 헬퍼 함수
 # =============================================================================
 
-def parse_rules_from_excel(content: bytes) -> tuple[List[Dict[str, Any]], Dict[str, int]]:
+def parse_rules_from_excel(content: bytes) -> tuple[List[Dict[str, Any]], Dict[str, int], int, int]:
     """
     Excel B 파일(규칙 파일)을 파싱하여 자연어 규칙 리스트를 반환
-    - 다중 시트 지원
-    - 병합된 셀(시트명) 처리 (Forward Fill)
-    - 공통 파싱 로직 적용
     
     Returns:
-        (natural_language_rules, sheet_row_counts)
-        - sheet_row_counts: {display_sheet_name: total_rows}
+        (natural_language_rules, sheet_row_counts, total_raw_rows, reported_max_row)
+        - reported_max_row: 엑셀 파일이 메타데이터로 보고하는 총 행 수 (헤더 제외)
     """
-    all_rules_sheets = pd.read_excel(io.BytesIO(content), header=None, engine='openpyxl', sheet_name=None)
+    from openpyxl import load_workbook
+    
+    wb = load_workbook(io.BytesIO(content), data_only=True)
     natural_language_rules = []
     sheet_row_counts = {}
+    total_raw_rows = 0
+    reported_max_row = 0
     
-    print(f"   [INFO] Found {len(all_rules_sheets)} sheets in rules file: {list(all_rules_sheets.keys())}")
+    print(f"   [INFO] Found {len(wb.sheetnames)} sheets in rules file: {wb.sheetnames}")
 
-    for rule_sheet_name, rules_df in all_rules_sheets.items():
-        # 각 시트의 원본 행 수 기록 (헤더 포함)
-        # 여기서 rule_sheet_name은 엑셀 파일의 시트 탭 이름이 아니라, 실제 내용에서 파싱할 이름이어야 함.
-        # 하지만 사용자는 "규칙 파일의 시트"별 행 수를 원할 수도 있고, "내용상 시트 구분"별 행 수를 원할 수도 있음.
-        # 현재 로직은 "내용상 시트 구분"을 따르므로, rules_df 전체 행 수는 엑셀 탭 기준임.
-        # 질문의 의도는 "규칙 파일에 시트1 데이터가 12행..." 이므로, 
-        # B.xlsx가 [시트명, 열, 항목...] 구조라면, '시트명' 컬럼의 값별로 행 수를 세어야 함.
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        print(f"   [INFO] Processing rules sheet: '{sheet_name}' (Reported Max Row: {ws.max_row})")
         
-        print(f"   [INFO] Processing rules sheet: '{rule_sheet_name}' (Rows: {len(rules_df)})")
+        # 메타데이터 상의 max_row 누적 (헤더 2행 제외)
+        if ws.max_row > 2:
+            reported_max_row += (ws.max_row - 2)
         
-        # [중요] 시트명 컬럼(B열, index 1)에 대해 Forward Fill 적용 (병합된 셀 대응)
-        if len(rules_df) > 2:
-            # 안전한 처리를 위해 컬럼을 복사하여 작업
-            # B열(index 1)이 시트명
-            sheet_col = rules_df[1].copy()
+        last_sheet_name_val = None 
+        consecutive_empty_rows = 0
+        
+        for row_idx, row_values in enumerate(ws.iter_rows(min_row=3, max_row=1000, values_only=True), start=3):
+            if all(cell is None for cell in row_values):
+                consecutive_empty_rows += 1
+                if consecutive_empty_rows >= 5: 
+                    break
+                continue
             
-            # 2행(index 2)부터 끝까지에 대해 공백 -> None 치환
-            # (regex=True를 사용하여 공백만 있는 문자열도 처리)
-            sheet_col.iloc[2:] = sheet_col.iloc[2:].replace(r'^\s*$', None, regex=True)
+            consecutive_empty_rows = 0
+            total_raw_rows += 1
             
-            # Forward Fill 적용
-            sheet_col.iloc[2:] = sheet_col.iloc[2:].ffill()
+            raw_sheet_val = row_values[1] if len(row_values) > 1 else None
+            if isinstance(raw_sheet_val, str) and not raw_sheet_val.strip():
+                raw_sheet_val = None
+            if raw_sheet_val is not None:
+                last_sheet_name_val = raw_sheet_val
             
-            # 원본 데이터프레임에 다시 할당
-            rules_df[1] = sheet_col
-
-        # 시트별 행 수 집계 (B열 값 기준)
-        # 헤더(2행) 제외하고 카운트
-        if len(rules_df) > 2:
-            sheet_names_series = rules_df.iloc[2:, 1]
-            counts = sheet_names_series.value_counts()
-            for name, count in counts.items():
-                if pd.notna(name):
-                    disp_name = normalize_sheet_name(str(name))
-                    sheet_row_counts[disp_name] = sheet_row_counts.get(disp_name, 0) + count
-
-        # Excel B를 자연어 규칙 리스트로 변환
-        for idx, row in rules_df.iterrows():
-            if idx < 2: continue # 헤더 건너뜀
-
-            num_cols = len(row)
-            # 안전한 접근
-            raw_sheet_name = row.iloc[1] if num_cols > 1 and pd.notna(row.iloc[1]) else ""
-            field_name = row.iloc[3] if num_cols > 3 and pd.notna(row.iloc[3]) else ""
+            current_sheet_name = last_sheet_name_val
             
-            # 시트명과 필드명이 있는 경우만 처리
-            if raw_sheet_name:
-                # 비교를 위해 공백 제거된 이름 사용
-                canonical_sheet_name = get_canonical_name(raw_sheet_name)
+            if current_sheet_name:
+                disp_name = normalize_sheet_name(str(current_sheet_name))
+                sheet_row_counts[disp_name] = sheet_row_counts.get(disp_name, 0) + 1
+            
+            if not current_sheet_name:
+                continue
                 
-                column_letter = row.iloc[2] if num_cols > 2 and pd.notna(row.iloc[2]) else ""
-                validation_rule = row.iloc[4] if num_cols > 4 and pd.notna(row.iloc[4]) else ""
-                condition = row.iloc[5] if num_cols > 5 and pd.notna(row.iloc[5]) else ""
-                note = row.iloc[6] if num_cols > 6 and pd.notna(row.iloc[6]) else ""
-
-                if condition and "해당없음" in str(condition):
-                    continue
-                
-                safe_field_name = field_name if field_name else "(필드명 없음)"
-                rule_text = str(validation_rule) if validation_rule else (f"조건: {condition}" if condition else f"기본 검증 ({safe_field_name})")
-
-                rule_entry = {
-                    "sheet": canonical_sheet_name, # 비교용
-                    "display_sheet_name": normalize_sheet_name(raw_sheet_name), # 표시용
-                    "row": idx + 1,
-                    "column_letter": column_letter,
-                    "field": safe_field_name,
-                    "rule_text": rule_text,
-                    "condition": condition,
-                    "note": note
-                }
-                natural_language_rules.append(rule_entry)
-                
-    return natural_language_rules, sheet_row_counts
+            field_name = row_values[3] if len(row_values) > 3 else None
+            condition = row_values[5] if len(row_values) > 5 else None
+            if condition and "해당없음" in str(condition):
+                continue
+            
+            column_letter = row_values[2] if len(row_values) > 2 else ""
+            validation_rule = row_values[4] if len(row_values) > 4 else ""
+            note = row_values[6] if len(row_values) > 6 else ""
+            safe_field_name = str(field_name) if field_name else "(필드명 없음)"
+            rule_text = str(validation_rule) if validation_rule else (f"조건: {condition}" if condition else f"기본 검증 ({safe_field_name})")
+            
+            rule_entry = {
+                "sheet": get_canonical_name(str(current_sheet_name)),
+                "display_sheet_name": normalize_sheet_name(str(current_sheet_name)),
+                "row": row_idx,
+                "column_letter": str(column_letter) if column_letter else "",
+                "field": safe_field_name,
+                "rule_text": rule_text,
+                "condition": str(condition) if condition else "",
+                "note": str(note) if note else ""
+            }
+            natural_language_rules.append(rule_entry)
+            
+    return natural_language_rules, sheet_row_counts, total_raw_rows, reported_max_row
 
 def normalize_sheet_name(name: str) -> str:
     """
@@ -339,7 +326,7 @@ async def validate_data(
                 "original_name": sheet_name,
                 "df": df
             }
-            sheet_mapping_info[norm_name] = sheet_name
+            sheet_mapping_info[canonical_name] = sheet_name
             
             print(f"   [OK] Loaded sheet '{sheet_name}' -> canonical '{canonical_name}': {len(df)} rows")
 
@@ -352,7 +339,7 @@ async def validate_data(
         rules_content = await rules_file.read()
 
         # 헬퍼 함수를 사용하여 규칙 파싱 (로직 통합)
-        natural_language_rules, sheet_row_counts = parse_rules_from_excel(rules_content)
+        natural_language_rules, sheet_row_counts, total_raw_rows, reported_max_row = parse_rules_from_excel(rules_content)
 
         # 디버깅: 시트별 규칙 개수 출력
         from collections import Counter
@@ -361,9 +348,10 @@ async def validate_data(
         for sheet, count in sheet_counts.items():
             print(f"   - '{sheet}': {count} rules")
 
-        # [필수] 매칭 통계 계산을 위한 리스트 미리 정의
-        raw_rule_sheets_canonical = sorted(list(set(r['sheet'] for r in natural_language_rules)))
-        raw_rule_sheets_display = sorted(list(set(r['display_sheet_name'] for r in natural_language_rules)))
+        # [수정] 매칭 통계 계산을 위한 리스트 미리 정의 (Step 5에서 사용)
+        # 필터링 전의 전체 시트 목록(sheet_row_counts)을 기준으로 합니다.
+        all_rule_sheets_display_unfiltered = sorted(list(sheet_row_counts.keys()))
+        all_rule_sheets_canonical_unfiltered = [get_canonical_name(name) for name in all_rule_sheets_display_unfiltered]
 
         # =====================================================================
         # Step 3: AI 규칙 해석
@@ -376,12 +364,6 @@ async def validate_data(
         print(f"[OK] AI interpreted {len(ai_response.rules)} rules")
         print(f"[WARN] Detected {len(ai_response.conflicts)} conflicts")
 
-        # --- 디버그 로그 추가 ---
-        import pprint
-        print("\n[DEBUG] AI Response Rules:")
-        pprint.pprint([rule.dict() for rule in ai_response.rules])
-        # ---------------------
-        
         # =====================================================================
         # Step 4: 결정론적 검증 실행 - 시트별 처리 (통합 매칭 로직 적용)
         # =====================================================================
@@ -396,44 +378,31 @@ async def validate_data(
         for rule in ai_response.rules:
             rules_by_sheet[rule.source.sheet_name].append(rule)
 
-        # 디버깅: 모든 규칙의 시트명 출력
-        print("\n[DEBUG] Rules summary:")
-        unique_sheets_in_rules = set(rules_by_sheet.keys())
-        print(f"   Sheets in rules (canonical): {unique_sheets_in_rules}")
-        print(f"   Sheets in data (canonical): {set(sheet_data_map.keys())}")
-
         # 시트별 데이터 순회 (Canonical Key 사용)
         for canonical_name, data in sheet_data_map.items():
             display_name = data["display_name"]
             df = data["df"]
             
             print(f"\n   [SHEET] Validating sheet: '{display_name}' (Canonical: '{canonical_name}')")
-            print(f"      Rows: {len(df)}, Columns: {len(df.columns)}")
-
-            # 규칙 조회 (O(1))
+            
+            # 규칙 조회
             sheet_rules = rules_by_sheet.get(canonical_name, [])
-
-            print(f"      Rules found: {len(sheet_rules)}")
             
             if not sheet_rules:
                 print(f"   [WARN] No rules found for sheet: '{display_name}', skipping...")
                 continue
             
-            # 규칙 상세 로깅
-            for rule in sheet_rules:
-                print(f"         - {rule.rule_id}: {rule.field_name} ({rule.rule_type})")
-
             # 검증 실행
             errors = engine.validate(df, sheet_rules)
             summary = engine.get_summary(len(df), len(sheet_rules))
 
-            # 시트 정보를 에러에 추가 (응답에는 Normalized Display Name 사용)
+            # 시트 정보를 에러에 추가
             for error in errors:
                 error.sheet = display_name
 
             all_errors.extend(errors)
             
-            # 요약 정보 저장 (Frontend Compatibility를 위해 Display Name 사용)
+            # 요약 정보 저장
             all_sheets_summary[display_name] = {
                 "total_rows": len(df),
                 "error_rows": summary.error_rows,
@@ -442,16 +411,10 @@ async def validate_data(
                 "rules_applied": len(sheet_rules)
             }
 
-            print(f"   [OK] Sheet '{display_name}': {len(errors)} errors found")
-
-        # 전체 요약
+        # 전체 요약 계산
         total_rows = sum(s["total_rows"] for s in all_sheets_summary.values())
         total_error_rows = sum(s["error_rows"] for s in all_sheets_summary.values())
 
-        print(f"\n[OK] Validation complete")
-        print(f"   Total errors: {len(all_errors)}")
-        print(f"   Error rows: {total_error_rows}/{total_rows}")
-        
         # =====================================================================
         # Step 5: 응답 생성
         # =====================================================================
@@ -467,14 +430,16 @@ async def validate_data(
         )
 
         # 인지 내용 집계
-        print("\n[DEBUG] Grouping errors...")
         error_groups = group_errors(all_errors)
-        print(f"   Grouped {len(all_errors)} errors into {len(error_groups)} groups")
 
         # 매칭 통계 계산 (통합된 자료구조 활용)
-        # Data Sheets (Canonical) vs Rule Sheets (Canonical)
+        # AI 규칙 개수 집계 (시트별 - Canonical Name 기준)
+        from collections import Counter
+        rule_counts_by_canonical = Counter(rule.source.sheet_name for rule in ai_response.rules)
+
+        # 매칭 연산
         data_sheets_set = set(sheet_data_map.keys())
-        rule_sheets_set = set(raw_rule_sheets_canonical)
+        rule_sheets_set = set(all_rule_sheets_canonical_unfiltered)
         
         matched_sheets_set = data_sheets_set.intersection(rule_sheets_set)
         unmatched_sheets_set = rule_sheets_set - data_sheets_set
@@ -483,19 +448,31 @@ async def validate_data(
         
         # 매칭 안 된 시트들의 Display Name 찾기
         unmatched_sheet_names = []
-        for canonical_name in unmatched_sheets_set:
-            # 규칙 리스트에서 해당 canonical name을 가진 첫 번째 항목의 display name 찾기
-            display_name = next((r['display_sheet_name'] for r in natural_language_rules if r['sheet'] == canonical_name), canonical_name)
-            unmatched_sheet_names.append(display_name)
+        for c_name in unmatched_sheets_set:
+            d_name = next((d for d in all_rule_sheets_display_unfiltered if get_canonical_name(d) == c_name), c_name)
+            unmatched_sheet_names.append(d_name)
 
         all_data_sheets = sorted(list(sheet_mapping_info.values()))
 
+        # 드롭다운 표시용 문자열 생성: "시트명 (N행 / M규칙)"
+        display_list = []
+        for d_name in all_rule_sheets_display_unfiltered:
+            c_name = get_canonical_name(d_name)
+            raw_rows_in_sheet = sheet_row_counts.get(d_name, 0)
+            rule_count_in_sheet = rule_counts_by_canonical.get(c_name, 0)
+            display_list.append(f"{d_name} ({raw_rows_in_sheet}행 / {rule_count_in_sheet}규칙)")
+
         matching_stats = {
-            "total_rule_sheets": len(raw_rule_sheets_canonical),
+            "total_rule_sheets": len(all_rule_sheets_canonical_unfiltered),
             "matched_sheets": matched_sheets_count,
             "unmatched_sheet_names": unmatched_sheet_names,
-            "all_rule_sheets": [f"{name} (규칙: {sheet_counts.get(name, 0)}개 / 전체: {sheet_row_counts.get(name, 0)}행)" for name in raw_rule_sheets_display],
-            "all_data_sheets": all_data_sheets
+            "all_rule_sheets": display_list,
+            "all_data_sheets": all_data_sheets,
+            # [DEBUG CODE] 사용자 요청에 의한 디버깅용 필드 (추후 삭제 가능)
+            "total_raw_rows": total_raw_rows, 
+            "reported_max_row": reported_max_row,
+            "total_rules_count": len(ai_response.rules)
+            # [END DEBUG CODE]
         }
 
         response = ValidationResponse(
@@ -548,7 +525,7 @@ async def interpret_rules_only(
         rules_content = await rules_file.read()
         
         # 헬퍼 함수 사용하여 규칙 파싱 (로직 통합)
-        natural_language_rules, _ = parse_rules_from_excel(rules_content)
+        natural_language_rules, _, _, _ = parse_rules_from_excel(rules_content)
         
         # AI 해석
         ai_response = await ai_interpreter.interpret_rules(natural_language_rules)
@@ -733,10 +710,10 @@ if __name__ == "__main__":
     import uvicorn
 
     print("""
-    ================================================================
+    =================================================================
       K-IFRS 1019 DBO Validation System
       AI-Powered Data Validation for Defined Benefit Obligations
-    ================================================================
+    =================================================================
 
     Starting server...
     Mobile-optimized UI available at: http://localhost:8000

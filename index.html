@@ -201,10 +201,21 @@
                                                ? 'ph-check-circle text-blue-600' 
                                                : 'ph-warning-circle text-orange-600'"></i>
                                     <div>
-                                        <h4 class="font-semibold text-sm mb-1">
-                                            시트 매칭 결과: 
-                                            <span x-text="results.metadata.matching_stats.matched_sheets"></span> / 
-                                            <span x-text="results.metadata.matching_stats.total_rule_sheets"></span> 시트 매칭됨
+                                        <h4 class="font-semibold text-sm mb-1 flex items-center">
+                                            <span>
+                                                시트 매칭 결과: 
+                                                <span x-text="results.metadata.matching_stats.matched_sheets"></span> / 
+                                                <span x-text="results.metadata.matching_stats.total_rule_sheets"></span> 시트 매칭됨
+                                            </span>
+                                            
+                                            <!-- DEBUG CODE: REMOVE LATER (사용자 요청에 의한 디버깅 정보 표시) -->
+                                            <span class="ml-3 text-red-600 font-bold text-xs bg-red-100 px-2 py-0.5 rounded border border-red-200 shadow-sm"
+                                                  title="읽은 행 수 / 파일상 Max Row / 생성된 규칙 수">
+                                                [DEBUG] 읽은행: <span x-text="results.metadata.matching_stats.total_raw_rows"></span> / 
+                                                MaxRow: <span x-text="results.metadata.matching_stats.reported_max_row"></span> /
+                                                규칙: <span x-text="results.metadata.matching_stats.total_rules_count"></span>
+                                            </span>
+                                            <!-- END DEBUG CODE -->
                                         </h4>
                                         <p class="text-sm opacity-90">
                                             규칙 파일에 정의된 시트 중 
@@ -218,7 +229,7 @@
                                 <div class="flex gap-2">
                                     <div class="relative group">
                                         <select class="appearance-none bg-white border border-slate-300 text-slate-700 py-1.5 pl-3 pr-8 rounded-lg text-xs font-medium focus:outline-none focus:ring-2 focus:ring-primary-500 cursor-pointer w-48">
-                                            <option disabled selected x-text="'규칙(B) 시트 목록 (' + results.metadata.matching_stats.all_rule_sheets.length + ')'"></option>
+                                            <option disabled selected x-text="'규칙(B) 시트 목록 (' + results.metadata.matching_stats.all_rule_sheets.length + '개 시트 / 총 ' + results.metadata.matching_stats.total_raw_rows + '행 / ' + results.metadata.matching_stats.total_rules_count + '규칙)'"></option>
                                             <template x-for="sheet in results.metadata.matching_stats.all_rule_sheets" :key="sheet">
                                                 <option x-text="sheet"></option>
                                             </template>
