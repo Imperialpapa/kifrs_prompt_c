@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>K-IFRS 1019 DBO Validator</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.3/dist/cdn.min.js"></script>
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        [x-cloak] { display: none !important; }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#f0f9ff',
+                            100: '#e0f2fe',
+                            500: '#0ea5e9',
+                            600: '#0284c7',
+                            700: '#0369a1',
+                        },
+                        secondary: '#64748b',
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased" x-data="app()">
+
+    <!-- Sidebar -->
+    <div class="fixed inset-y-0 left-0 w-64 bg-white border-r border-slate-200 z-30 transition-transform duration-300"
+         :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'">
+        
+        <div class="h-16 flex items-center px-6 border-b border-slate-100">
+            <div class="flex items-center gap-2 text-primary-600 font-bold text-xl">
+                <i class="ph-fill ph-shield-check text-2xl"></i>
+                <span>DBO Validator</span>
+            </div>
+        </div>
+
+        <nav class="p-4 space-y-1">
+            <template x-for="item in navItems" :key="item.id">
+                <button @click="currentTab = item.id; if(window.innerWidth < 1024) sidebarOpen = false"
+                        class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors"
+                        :class="currentTab === item.id ? 'bg-primary-50 text-primary-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'">
+                    <i :class="item.icon" class="text-lg"></i>
+                    <span x-text="item.label"></span>
+                </button>
+            </template>
+        </nav>
+
+        <div class="absolute bottom-0 w-full p-4 border-t border-slate-100">
+            <div class="bg-slate-50 rounded-lg p-4 space-y-2">
+                <div class="flex items-center gap-3 mb-1">
+                    <div class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                    <span class="text-xs font-semibold text-slate-600">System Online</span>
+                </div>
+                <div class="text-[10px] text-slate-400 font-mono leading-tight">
+                    <div x-text="frontendVersion"></div>
+                    <div x-text="backendVersion"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="lg:ml-64 min-h-screen flex flex-col transition-all duration-300">
+        
+        <!-- Top Header -->
+        <header class="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 lg:px-8 sticky top-0 z-20">
+            <button @click="sidebarOpen = !sidebarOpen" class="lg:hidden p-2 text-slate-500 hover:text-slate-700">
+                <i class="ph ph-list text-2xl"></i>
+            </button>
+            
+            <h1 class="text-lg font-semibold text-slate-800" x-text="navItems.find(i => i.id === currentTab).label"></h1>
+
+            <div class="flex items-center gap-4">
+                <button class="p-2 text-slate-400 hover:text-slate-600 transition-colors">
+                    <i class="ph ph-bell text-xl"></i>
+                </button>
+                <div class="w-8 h-8 bg-primary-100 rounded-full flex items-center justify-center text-primary-700 font-bold text-sm">
+                    K
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content Area -->
+        <main class="flex-1 p-4 lg:p-8 overflow-y-auto">
+            
+            <!-- VIEW: UPLOAD -->
+            <div x-show="currentTab === 'upload'" x-transition.opacity>
+                <div class="max-w-4xl mx-auto space-y-8">
+                    
+                    <div class="text-center space-y-2 mb-10">
+                        <h2 class="text-3xl font-bold text-slate-900">데이터 검증 시작</h2>
+                        <p class="text-slate-500">직원 데이터와 검증 규칙 파일을 업로드하여 AI 기반 검증을 시작하세요.</p>
+                    </div>
+
+                    <div class="grid md:grid-cols-2 gap-6">
+                        <!-- File A: Employee Data -->
+                        <div class="bg-white rounded-xl border-2 border-dashed border-slate-300 p-8 text-center transition-all hover:border-primary-400 group relative"
+                             @dragover.prevent="dragOverA = true"
+                             @dragleave.prevent="dragOverA = false"
+                             @drop.prevent="handleDrop($event, 'A')"
+                             :class="{'border-primary-500 bg-primary-50': dragOverA, 'border-green-400 bg-green-50': fileA}">
+                            
+                            <input type="file" id="fileA" accept=".xlsx,.xls" class="hidden" @change="handleFileSelect($event, 'A')">
+                            
+                            <div class="pointer-events-none">
+                                <div class="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform"
+                                     :class="{'bg-green-100 text-green-600': fileA}">
+                                    <i class="ph text-3xl" :class="fileA ? 'ph-check-circle' : 'ph-users'"></i>
+                                </div>
+                                <h3 class="font-semibold text-slate-800 mb-1">직원 데이터 (Excel A)</h3>
+                                <p class="text-sm text-slate-500 mb-4" x-text="fileA ? fileA.name : '클릭하거나 파일을 드래그하세요'"></p>
+                            </div>
+                            <label for="fileA" class="absolute inset-0 cursor-pointer"></label>
+                        </div>
+
+                        <!-- File B: Rules -->
+                        <div class="bg-white rounded-xl border-2 border-dashed border-slate-300 p-8 text-center transition-all hover:border-primary-400 group relative"
+                             @dragover.prevent="dragOverB = true"
+                             @dragleave.prevent="dragOverB = false"
+                             @drop.prevent="handleDrop($event, 'B')"
+                             :class="{'border-primary-500 bg-primary-50': dragOverB, 'border-green-400 bg-green-50': fileB}">
+                            
+                            <input type="file" id="fileB" accept=".xlsx,.xls" class="hidden" @change="handleFileSelect($event, 'B')">
+                            
+                            <div class="pointer-events-none">
+                                <div class="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform"
+                                     :class="{'bg-green-100 text-green-600': fileB}">
+                                    <i class="ph text-3xl" :class="fileB ? 'ph-check-circle' : 'ph-list-checks'"></i>
+                                </div>
+                                <h3 class="font-semibold text-slate-800 mb-1">검증 규칙 (Excel B)</h3>
+                                <p class="text-sm text-slate-500 mb-4" x-text="fileB ? fileB.name : '클릭하거나 파일을 드래그하세요'"></p>
+                            </div>
+                            <label for="fileB" class="absolute inset-0 cursor-pointer"></label>
+                        </div>
+                    </div>
+
+                    <div class="flex justify-center pt-8">
+                        <button @click="validateFiles" 
+                                class="px-8 py-4 bg-primary-600 text-white rounded-xl font-semibold shadow-lg shadow-primary-200 transition-all hover:bg-primary-700 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 flex items-center gap-2"
+                                :disabled="!fileA || !fileB || isLoading">
+                            <i class="ph ph-spinner animate-spin" x-show="isLoading"></i>
+                            <span x-text="isLoading ? '검증 분석 중...' : '검증 시작하기'"></span>
+                            <i class="ph ph-arrow-right" x-show="!isLoading"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- VIEW: DASHBOARD -->
+            <div x-show="currentTab === 'dashboard'" x-cloak>
+                <div x-show="!hasResults" class="text-center py-20">
+                    <div class="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-6 text-slate-400">
+                        <i class="ph ph-chart-bar text-4xl"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold text-slate-700 mb-2">아직 데이터가 없습니다</h3>
+                    <p class="text-slate-500 mb-6">먼저 '파일 업로드' 메뉴에서 데이터를 검증해주세요.</p>
+                    <button @click="currentTab = 'upload'" class="text-primary-600 font-medium hover:underline">업로드하러 가기 &rarr;</button>
+                </div>
+
+                <div x-show="hasResults" class="space-y-6">
+                    
+                    <!-- Matching Info Banner -->
+                    <template x-if="results?.metadata?.matching_stats">
+                        <div class="rounded-lg p-4 border"
+                             :class="results.metadata.matching_stats.matched_sheets === results.metadata.matching_stats.total_rule_sheets 
+                                     ? 'bg-blue-50 border-blue-200 text-blue-800' 
+                                     : 'bg-orange-50 border-orange-200 text-orange-800'">
+                            <div class="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
+                                <div class="flex items-start gap-3">
+                                    <i class="ph-fill text-xl mt-0.5"
+                                       :class="results.metadata.matching_stats.matched_sheets === results.metadata.matching_stats.total_rule_sheets 
+                                               ? 'ph-check-circle text-blue-600' 
+                                               : 'ph-warning-circle text-orange-600'"></i>
+                                    <div>
+                                        <h4 class="font-semibold text-sm mb-1">
+                                            시트 매칭 결과: 
+                                            <span x-text="results.metadata.matching_stats.matched_sheets"></span> / 
+                                            <span x-text="results.metadata.matching_stats.total_rule_sheets"></span> 시트 매칭됨
+                                        </h4>
+                                        <p class="text-sm opacity-90">
+                                            규칙 파일에 정의된 시트 중 
+                                            <span class="font-bold" x-text="Math.round((results.metadata.matching_stats.matched_sheets / results.metadata.matching_stats.total_rule_sheets) * 100)"></span>%가 
+                                            데이터 파일과 정상적으로 매칭되어 검증되었습니다.
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <!-- Sheet Dropdowns -->
+                                <div class="flex gap-2">
+                                    <div class="relative group">
+                                        <select class="appearance-none bg-white border border-slate-300 text-slate-700 py-1.5 pl-3 pr-8 rounded-lg text-xs font-medium focus:outline-none focus:ring-2 focus:ring-primary-500 cursor-pointer w-48">
+                                            <option disabled selected x-text="'규칙(B) 시트 목록 (' + results.metadata.matching_stats.all_rule_sheets.length + ')'"></option>
+                                            <template x-for="sheet in results.metadata.matching_stats.all_rule_sheets" :key="sheet">
+                                                <option x-text="sheet"></option>
+                                            </template>
+                                        </select>
+                                        <i class="ph ph-caret-down absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"></i>
+                                    </div>
+
+                                    <div class="relative group">
+                                        <select class="appearance-none bg-white border border-slate-300 text-slate-700 py-1.5 pl-3 pr-8 rounded-lg text-xs font-medium focus:outline-none focus:ring-2 focus:ring-primary-500 cursor-pointer w-48">
+                                            <option disabled selected x-text="'데이터(A) 시트 목록 (' + results.metadata.matching_stats.all_data_sheets.length + ')'"></option>
+                                            <template x-for="sheet in results.metadata.matching_stats.all_data_sheets" :key="sheet">
+                                                <option x-text="sheet"></option>
+                                            </template>
+                                        </select>
+                                        <i class="ph ph-caret-down absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"></i>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Missing Sheets List (Conditional) -->
+                            <template x-if="results.metadata.matching_stats.unmatched_sheet_names && results.metadata.matching_stats.unmatched_sheet_names.length > 0">
+                                <div class="mt-3 text-xs bg-white/60 p-2 rounded border border-orange-200/50">
+                                    <span class="font-semibold text-orange-700">⚠️ 매칭되지 않은 규칙 시트:</span>
+                                    <ul class="list-disc list-inside mt-1 space-y-0.5 text-orange-800">
+                                        <template x-for="sheet in results.metadata.matching_stats.unmatched_sheet_names" :key="sheet">
+                                            <li x-text="sheet"></li>
+                                        </template>
+                                    </ul>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+
+                    <!-- Stat Cards -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                        <div class="bg-white p-6 rounded-xl border border-slate-100 shadow-sm">
+                            <div class="text-slate-500 text-sm font-medium mb-2">전체 데이터 행</div>
+                            <div class="text-3xl font-bold text-slate-800" x-text="results?.summary?.total_rows.toLocaleString()"></div>
+                        </div>
+                        <div class="bg-white p-6 rounded-xl border border-slate-100 shadow-sm">
+                            <div class="text-slate-500 text-sm font-medium mb-2">정상 데이터</div>
+                            <div class="text-3xl font-bold text-green-600" x-text="results?.summary?.valid_rows.toLocaleString()"></div>
+                        </div>
+                        <div class="bg-white p-6 rounded-xl border border-slate-100 shadow-sm">
+                            <div class="text-slate-500 text-sm font-medium mb-2">발견된 오류</div>
+                            <div class="text-3xl font-bold text-red-500" x-text="results?.summary?.error_rows.toLocaleString()"></div>
+                        </div>
+                        <div class="bg-white p-6 rounded-xl border border-slate-100 shadow-sm">
+                            <div class="text-slate-500 text-sm font-medium mb-2">규칙 준수율</div>
+                            <div class="text-3xl font-bold text-primary-600">
+                                <span x-text="calculateComplianceRate()"></span>%
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Detailed Analysis Section with Tabs -->
+                    <div class="space-y-4" x-show="selectedSheet">
+                        <h3 class="font-semibold text-slate-800 flex items-center gap-2">
+                            <i class="ph-fill ph-list-magnifying-glass text-primary-600"></i>
+                            상세 분석
+                        </h3>
+
+                        <!-- Sheet Tabs -->
+                        <div class="flex gap-2 overflow-x-auto pb-2 custom-scrollbar">
+                            <template x-for="(summary, sheetName) in results?.metadata?.sheets_summary" :key="sheetName">
+                                <button @click="selectedSheet = sheetName"
+                                        class="px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all flex items-center gap-2 border"
+                                        :class="selectedSheet === sheetName 
+                                            ? 'bg-primary-600 text-white border-primary-600 shadow-md transform scale-105' 
+                                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:border-slate-300'">
+                                    <span x-text="sheetName"></span>
+                                    <span class="text-xs px-1.5 py-0.5 rounded-full"
+                                          :class="selectedSheet === sheetName 
+                                              ? 'bg-white/20 text-white' 
+                                              : (summary.error_rows > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600')"
+                                          x-text="summary.error_rows > 0 ? summary.error_rows : 'OK'"></span>
+                                </button>
+                            </template>
+                        </div>
+
+                        <!-- Sheet Content Area -->
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            
+                            <!-- Left Column: Stats, Rules & Chart -->
+                            <div class="lg:col-span-2 space-y-6">
+                                <!-- Sheet Summary Card -->
+                                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5" x-data="{ summary: getSelectedSheetSummary() }">
+                                    <div class="flex items-center justify-between mb-4">
+                                        <h4 class="font-bold text-slate-800 text-lg flex items-center gap-2">
+                                            <i class="ph-fill ph-table text-slate-400"></i>
+                                            <span x-text="selectedSheet"></span>
+                                        </h4>
+                                        <div class="flex gap-3 text-sm">
+                                            <div class="flex items-center gap-1.5">
+                                                <div class="w-2 h-2 rounded-full bg-slate-300"></div>
+                                                <span class="text-slate-500">전체: </span>
+                                                <span class="font-bold text-slate-700" x-text="summary?.total_rows.toLocaleString()"></span>
+                                            </div>
+                                            <div class="flex items-center gap-1.5">
+                                                <div class="w-2 h-2 rounded-full" :class="summary?.error_rows > 0 ? 'bg-red-500' : 'bg-green-500'"></div>
+                                                <span class="text-slate-500">오류: </span>
+                                                <span class="font-bold" :class="summary?.error_rows > 0 ? 'text-red-600' : 'text-green-600'" x-text="summary?.error_rows.toLocaleString()"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Rules List -->
+                                    <div class="bg-slate-50 rounded-lg border border-slate-200 p-3">
+                                        <div class="text-xs font-semibold text-slate-500 mb-2 flex justify-between">
+                                            <span>적용된 검증 규칙</span>
+                                            <span class="bg-white border border-slate-200 px-1.5 rounded text-slate-600" x-text="getRulesForSheet(selectedSheet).length + '개'"></span>
+                                        </div>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-40 overflow-y-auto custom-scrollbar pr-1">
+                                            <template x-for="rule in getRulesForSheet(selectedSheet)" :key="rule.rule_id">
+                                                <div class="text-xs bg-white border border-slate-100 rounded p-2 flex items-start gap-2 hover:border-primary-300 transition-colors">
+                                                    <i class="ph-fill ph-check-circle text-primary-500 mt-0.5 shrink-0"></i>
+                                                    <div class="min-w-0">
+                                                        <div class="font-bold text-slate-700 truncate" x-text="rule.field_name"></div>
+                                                        <div class="text-slate-500 leading-tight truncate" x-text="rule.ai_interpretation_summary || rule.rule_type"></div>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                            <div x-show="getRulesForSheet(selectedSheet).length === 0" class="col-span-full text-center py-4 text-slate-400 italic text-sm">
+                                                적용된 규칙이 없습니다.
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Chart Card -->
+                                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+                                    <h4 class="font-semibold text-slate-800 mb-4 text-sm">시트별 오류 분포</h4>
+                                    <div class="h-64">
+                                        <canvas id="sheetChart"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Right Column: Top 5 Issues -->
+                            <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 flex flex-col h-full">
+                                <h4 class="font-semibold text-slate-800 mb-4 flex items-center gap-2">
+                                    <i class="ph-fill ph-warning text-orange-500"></i>
+                                    <span>주요 인지 항목 (Top 5)</span>
+                                </h4>
+                                
+                                <div class="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-1">
+                                    <template x-for="(group, index) in getTopErrorsForSheet(selectedSheet)" :key="index">
+                                        <div class="p-3 bg-slate-50 rounded-lg border-l-4 border-orange-400 hover:bg-orange-50/50 transition-colors">
+                                            <div class="flex justify-between items-start mb-1.5">
+                                                <span class="text-xs font-bold text-slate-600 bg-white border border-slate-200 px-1.5 py-0.5 rounded" x-text="group.column"></span>
+                                                <span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-bold whitespace-nowrap" x-text="group.count + '건'"></span>
+                                            </div>
+                                            <p class="text-sm text-slate-700 leading-snug" x-text="group.message"></p>
+                                            
+                                            <!-- Sample Values -->
+                                            <div class="mt-2 pt-2 border-t border-slate-200/50 flex gap-1 overflow-x-auto">
+                                                <template x-for="val in group.sample_values" :key="val">
+                                                    <span class="text-[10px] font-mono bg-white text-slate-500 px-1 rounded border border-slate-200 whitespace-nowrap" x-text="val"></span>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+                                    
+                                    <div x-show="getTopErrorsForSheet(selectedSheet).length === 0" class="flex flex-col items-center justify-center h-40 text-slate-400">
+                                        <i class="ph ph-check-circle text-4xl mb-2 text-green-100"></i>
+                                        <span class="text-sm">발견된 오류가 없습니다.</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- VIEW: REPORT (Details) -->
+            <div x-show="currentTab === 'report'" x-cloak>
+                <div x-show="!hasResults" class="text-center py-20">
+                     <div class="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-6 text-slate-400">
+                        <i class="ph ph-files text-4xl"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold text-slate-700 mb-2">분석 결과가 없습니다</h3>
+                    <button @click="currentTab = 'upload'" class="text-primary-600 font-medium hover:underline">업로드 화면으로 이동</button>
+                </div>
+
+                <div x-show="hasResults" class="space-y-4">
+                    <div class="flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
+                        <div class="relative w-full sm:w-64">
+                            <i class="ph ph-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                            <input type="text" x-model="searchQuery" placeholder="오류 검색..." 
+                                   class="w-full pl-10 pr-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent">
+                        </div>
+                        <button @click="downloadExcel" class="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-sm">
+                            <i class="ph ph-file-xls text-lg"></i>
+                            <span>Excel 다운로드</span>
+                        </button>
+                    </div>
+
+                    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead class="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
+                                    <tr>
+                                        <th class="px-6 py-4">위치</th>
+                                        <th class="px-6 py-4">항목</th>
+                                        <th class="px-6 py-4">오류 내용</th>
+                                        <th class="px-6 py-4">값 (실제/예상)</th>
+                                        <th class="px-6 py-4">규칙 ID</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    <template x-for="error in filteredErrors" :key="error.id || Math.random()">
+                                        <tr class="hover:bg-slate-50 transition-colors">
+                                            <td class="px-6 py-4 whitespace-nowrap">
+                                                <div class="font-medium text-slate-900" x-text="error.sheet"></div>
+                                                <div class="text-xs text-slate-500" x-text="'Row ' + error.row"></div>
+                                            </td>
+                                            <td class="px-6 py-4 font-medium text-slate-700" x-text="error.column"></td>
+                                            <td class="px-6 py-4 text-slate-600" x-text="error.message"></td>
+                                            <td class="px-6 py-4">
+                                                <div class="flex items-center gap-2">
+                                                    <span class="px-2 py-1 bg-red-50 text-red-600 rounded text-xs font-mono" x-text="error.actual_value"></span>
+                                                    <i class="ph ph-arrow-right text-slate-300 text-xs" x-show="error.expected"></i>
+                                                    <span class="px-2 py-1 bg-green-50 text-green-600 rounded text-xs font-mono" x-show="error.expected" x-text="error.expected"></span>
+                                                </div>
+                                            </td>
+                                            <td class="px-6 py-4 text-xs text-slate-400" x-text="error.rule_id"></td>
+                                        </tr>
+                                    </template>
+                                    <tr x-show="filteredErrors.length === 0">
+                                        <td colspan="5" class="px-6 py-12 text-center text-slate-500">
+                                            검색 결과가 없습니다.
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="bg-slate-50 px-6 py-3 border-t border-slate-200 text-xs text-slate-500 flex justify-between items-center">
+                            <span x-text="'표시: ' + filteredErrors.length + ' / 전체 ' + (results?.errors?.length || 0) + ' 건'"></span>
+                            <span x-show="results?.errors?.length > 100" class="text-orange-500">
+                                * 성능을 위해 상위 100건만 표시됩니다. 전체 내역은 Excel을 다운로드하세요.
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <script>
+        function app() {
+            return {
+                sidebarOpen: false,
+                currentTab: 'upload', // upload, dashboard, report
+                
+                // File Upload State
+                fileA: null,
+                fileB: null,
+                dragOverA: false,
+                dragOverB: false,
+                isLoading: false,
+
+                // Results State
+                results: null,
+                searchQuery: '',
+                frontendVersion: 'Front: v1.3.0 (2025-01-13)',
+                backendVersion: 'Back: Checking...',
+                selectedSheet: null, // 현재 선택된 시트
+
+                // Navigation Items
+                navItems: [
+                    { id: 'upload', label: '파일 업로드', icon: 'ph-upload-simple' },
+                    { id: 'dashboard', label: '검증 대시보드', icon: 'ph-chart-pie-slice' },
+                    { id: 'report', label: '상세 리포트', icon: 'ph-table' },
+                ],
+
+                async init() {
+                    // Fetch Version Info
+                    try {
+                        const res = await fetch('http://localhost:8000/version');
+                        const data = await res.json();
+                        this.backendVersion = `Back: v${data.system_version} (${data.build_time})`;
+                    } catch (e) {
+                        console.error("Backend offline");
+                        this.backendVersion = "Back: Offline";
+                    }
+                },
+
+                get hasResults() {
+                    return this.results !== null;
+                },
+
+                get filteredErrors() {
+                    if (!this.results || !this.results.errors) return [];
+                    const query = this.searchQuery.toLowerCase();
+                    // Limit to 100 for performance in DOM
+                    return this.results.errors
+                        .filter(e => 
+                            (e.message && e.message.toLowerCase().includes(query)) ||
+                            (e.sheet && e.sheet.toLowerCase().includes(query)) ||
+                            (e.column && e.column.toLowerCase().includes(query))
+                        )
+                        .slice(0, 100);
+                },
+
+                // Helper: Get Applied Rules for a specific sheet
+                getRulesForSheet(sheetName) {
+                    if (!this.results || !this.results.rules_applied) return [];
+                    return this.results.rules_applied.filter(r => r.source.sheet_name === sheetName);
+                },
+
+                // Helper: Get Top 5 Errors for a specific sheet
+                getTopErrorsForSheet(sheetName) {
+                    if (!this.results || !this.results.error_groups) return [];
+                    return this.results.error_groups
+                        .filter(g => g.sheet === sheetName)
+                        .sort((a, b) => b.count - a.count)
+                        .slice(0, 5);
+                },
+
+                // Helper: Get Summary for selected sheet safely
+                getSelectedSheetSummary() {
+                    if (!this.selectedSheet || !this.results || !this.results.metadata.sheets_summary) return null;
+                    return this.results.metadata.sheets_summary[this.selectedSheet];
+                },
+
+                handleFileSelect(event, type) {
+                    const file = event.target.files[0];
+                    if (file) {
+                        if (type === 'A') this.fileA = file;
+                        if (type === 'B') this.fileB = file;
+                    }
+                },
+
+                handleDrop(event, type) {
+                    this[type === 'A' ? 'dragOverA' : 'dragOverB'] = false;
+                    const file = event.dataTransfer.files[0];
+                    if (file) {
+                        if (type === 'A') this.fileA = file;
+                        if (type === 'B') this.fileB = file;
+                    }
+                },
+
+                async validateFiles() {
+                    if (!this.fileA || !this.fileB) return;
+
+                    this.isLoading = true;
+                    const formData = new FormData();
+                    formData.append('employee_file', this.fileA);
+                    formData.append('rules_file', this.fileB);
+
+                    try {
+                        const response = await fetch('http://localhost:8000/validate', {
+                            method: 'POST',
+                            body: formData
+                        });
+
+                        if (!response.ok) throw new Error('Validation Failed');
+
+                        this.results = await response.json();
+                        
+                        // 기본 선택 시트 설정 (첫 번째 시트)
+                        if (this.results.metadata && this.results.metadata.sheets_summary) {
+                            const sheets = Object.keys(this.results.metadata.sheets_summary);
+                            if (sheets.length > 0) {
+                                this.selectedSheet = sheets[0];
+                            }
+                        }
+
+                        this.currentTab = 'dashboard';
+                        
+                        // Wait for DOM update then render charts
+                        this.$nextTick(() => {
+                            this.renderCharts();
+                        });
+
+                    } catch (error) {
+                        alert('오류가 발생했습니다: ' + error.message);
+                    } finally {
+                        this.isLoading = false;
+                    }
+                },
+
+                calculateComplianceRate() {
+                    if (!this.results) return 0;
+                    const total = this.results.summary.total_rows;
+                    const valid = this.results.summary.valid_rows;
+                    return total > 0 ? Math.round((valid / total) * 100) : 0;
+                },
+
+                renderCharts() {
+                    if (!this.results || !this.results.metadata || !this.results.metadata.sheets_summary) {
+                        console.warn("No sheet summary data available for charts.");
+                        return;
+                    }
+
+                    const ctx = document.getElementById('sheetChart');
+                    if (!ctx) return;
+                    
+                    if (window.myChart) {
+                        window.myChart.destroy();
+                    }
+
+                    const sheets = this.results.metadata.sheets_summary;
+                    // Ensure labels are strings and handle potential encoding issues if any
+                    const labels = Object.keys(sheets).map(name => String(name));
+                    
+                    const errorData = labels.map(l => sheets[l].error_rows || 0);
+                    const validData = labels.map(l => sheets[l].valid_rows || 0);
+
+                    console.log("Rendering Chart:", { labels, errorData, validData });
+
+                    window.myChart = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: labels,
+                            datasets: [
+                                {
+                                    label: '오류 행',
+                                    data: errorData,
+                                    backgroundColor: '#ef4444',
+                                    borderRadius: 4
+                                },
+                                {
+                                    label: '정상 행',
+                                    data: validData,
+                                    backgroundColor: '#22c55e',
+                                    borderRadius: 4
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                x: { stacked: true, grid: { display: false } },
+                                y: { stacked: true, grid: { color: '#f1f5f9' } }
+                            },
+                            plugins: {
+                                legend: { position: 'bottom' },
+                                tooltip: {
+                                    callbacks: {
+                                        title: function(context) {
+                                            return context[0].label;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                },
+
+                async downloadExcel() {
+                    if (!this.results) return;
+                    
+                    try {
+                        const response = await fetch('http://localhost:8000/download-results', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.results)
+                        });
+                        
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `DBO_Validation_Result_${new Date().toISOString().slice(0,10)}.xlsx`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                    } catch (e) {
+                        alert('다운로드 실패');
+                    }
+                }
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,191 @@
+{
+  "validation_status": "FAIL",
+  "summary": {
+    "total_rows": 1250,
+    "valid_rows": 1180,
+    "error_rows": 70,
+    "total_errors": 95,
+    "rules_applied": 12,
+    "timestamp": "2025-01-12T10:30:00Z"
+  },
+  "errors": [
+    {
+      "row": 15,
+      "column": "birth_date",
+      "rule_id": "RULE_003",
+      "message": "생년월일 형식이 잘못되었습니다. YYYYMMDD 형식이어야 합니다.",
+      "actual_value": "1985-03-15",
+      "expected": "YYYYMMDD (예: 19850315)",
+      "source_rule": "생년월일은 YYYYMMDD 형식으로 입력"
+    },
+    {
+      "row": 42,
+      "column": "hire_date",
+      "rule_id": "RULE_005",
+      "message": "입사일이 생년월일보다 이전이거나, 입사 시 만 15세 미만입니다.",
+      "actual_value": "hire_date=19950101, birth_date=20000101",
+      "expected": "hire_date > birth_date",
+      "source_rule": "입사일은 생년월일보다 이후, 최소 만 15세"
+    },
+    {
+      "row": 128,
+      "column": "employee_id",
+      "rule_id": "RULE_002",
+      "message": "사번이 중복되었습니다.",
+      "actual_value": "E00542",
+      "expected": "고유값",
+      "source_rule": "사번: 공백 없음, 중복 없음"
+    },
+    {
+      "row": 315,
+      "column": "gender",
+      "rule_id": "RULE_006",
+      "message": "성별은 'M', 'F', '남', '여' 중 하나여야 합니다.",
+      "actual_value": "X",
+      "expected": "['M', 'F', '남', '여'] 중 하나",
+      "source_rule": "성별: M, F, 남, 여만 허용"
+    },
+    {
+      "row": 628,
+      "column": "employee_id",
+      "rule_id": "RULE_001",
+      "message": "사번이 비어있습니다.",
+      "actual_value": null,
+      "expected": null,
+      "source_rule": "사번: 공백 없음, 중복 없음"
+    }
+  ],
+  "conflicts": [
+    {
+      "rule_id": "RULE_008",
+      "conflict_type": "kifrs_mismatch",
+      "description": "Excel B에서 '60세 이상은 제외'라고 명시했으나, K-IFRS 1019는 모든 재직 중인 임직원을 포함해야 함을 명시하고 있습니다. 나이를 이유로 임의 제외하는 것은 회계기준에 맞지 않습니다.",
+      "kifrs_reference": "K-IFRS 1019 문단 28-31 (employee_eligibility)",
+      "affected_rules": ["RULE_007", "RULE_008"],
+      "recommendation": "해당 규칙을 제거하거나, 회계법인과 협의하여 특정 조건(예: 계약직, 특정 직군 제외)으로 변경해야 합니다.",
+      "severity": "high"
+    },
+    {
+      "rule_id": "RULE_012",
+      "conflict_type": "ambiguous_interpretation",
+      "description": "Excel B에서 '적절한 급여 범위'라는 표현이 애매합니다. 구체적인 최소/최대값이 명시되지 않았습니다.",
+      "kifrs_reference": null,
+      "affected_rules": ["RULE_012"],
+      "recommendation": "구체적인 급여 범위(예: 최소 2천만원, 최대 2억원)를 명시하거나, 규칙을 제거하세요.",
+      "severity": "medium"
+    }
+  ],
+  "rules_applied": [
+    {
+      "rule_id": "RULE_001",
+      "field_name": "employee_id",
+      "rule_type": "required",
+      "parameters": {},
+      "error_message_template": "사번이 비어있습니다.",
+      "source": {
+        "original_text": "사번: 공백 없음, 중복 없음",
+        "sheet_name": "validation_rules",
+        "row_number": 2,
+        "kifrs_reference": null
+      },
+      "ai_interpretation_summary": "사번 필드는 필수이며 중복이 없어야 함",
+      "confidence_score": 0.98
+    },
+    {
+      "rule_id": "RULE_002",
+      "field_name": "employee_id",
+      "rule_type": "no_duplicates",
+      "parameters": {},
+      "error_message_template": "사번이 중복되었습니다.",
+      "source": {
+        "original_text": "사번: 공백 없음, 중복 없음",
+        "sheet_name": "validation_rules",
+        "row_number": 2,
+        "kifrs_reference": null
+      },
+      "ai_interpretation_summary": "사번은 데이터 내에서 고유해야 하며 중복이 허용되지 않음",
+      "confidence_score": 0.98
+    },
+    {
+      "rule_id": "RULE_003",
+      "field_name": "birth_date",
+      "rule_type": "format",
+      "parameters": {
+        "format": "YYYYMMDD",
+        "regex": "^[0-9]{8}$"
+      },
+      "error_message_template": "생년월일 형식이 잘못되었습니다. YYYYMMDD 형식이어야 합니다.",
+      "source": {
+        "original_text": "생년월일은 YYYYMMDD 형식",
+        "sheet_name": "validation_rules",
+        "row_number": 3,
+        "kifrs_reference": "K-IFRS 1019 데이터 요구사항"
+      },
+      "ai_interpretation_summary": "생년월일은 8자리 숫자로 YYYYMMDD 형식을 따라야 함",
+      "confidence_score": 0.99
+    },
+    {
+      "rule_id": "RULE_004",
+      "field_name": "birth_date",
+      "rule_type": "range",
+      "parameters": {
+        "min_date": "19200101",
+        "max_date": "20070101"
+      },
+      "error_message_template": "생년월일이 유효 범위를 벗어났습니다 (1920-2007).",
+      "source": {
+        "original_text": "생년월일은 1920년 이후, 2007년 이전",
+        "sheet_name": "validation_rules",
+        "row_number": 4,
+        "kifrs_reference": null
+      },
+      "ai_interpretation_summary": "생년월일은 합리적인 범위 내에 있어야 함 (최소 만 18세)",
+      "confidence_score": 0.95
+    },
+    {
+      "rule_id": "RULE_005",
+      "field_name": "hire_date",
+      "rule_type": "date_logic",
+      "parameters": {
+        "compare_field": "birth_date",
+        "operator": "greater_than",
+        "min_age_at_hire": 15
+      },
+      "error_message_template": "입사일이 생년월일보다 이전이거나, 입사 시 만 15세 미만입니다.",
+      "source": {
+        "original_text": "입사일은 생년월일보다 이후, 최소 만 15세",
+        "sheet_name": "validation_rules",
+        "row_number": 5,
+        "kifrs_reference": null
+      },
+      "ai_interpretation_summary": "입사일은 생년월일 이후이며, 입사 시점에 최소 만 15세여야 함",
+      "confidence_score": 0.97
+    },
+    {
+      "rule_id": "RULE_006",
+      "field_name": "gender",
+      "rule_type": "format",
+      "parameters": {
+        "allowed_values": ["M", "F", "남", "여"]
+      },
+      "error_message_template": "성별은 'M', 'F', '남', '여' 중 하나여야 합니다.",
+      "source": {
+        "original_text": "성별: M, F, 남, 여만 허용",
+        "sheet_name": "validation_rules",
+        "row_number": 6,
+        "kifrs_reference": "K-IFRS 1019 - 사망률 테이블 적용"
+      },
+      "ai_interpretation_summary": "성별은 사망률 테이블 적용을 위해 명확히 정의되어야 함",
+      "confidence_score": 0.99
+    }
+  ],
+  "metadata": {
+    "employee_file_name": "employees_2024Q4.xlsx",
+    "rules_file_name": "validation_rules_v3.xlsx",
+    "ai_model_version": "claude-sonnet-4-20250514",
+    "system_version": "1.0.0",
+    "ai_processing_time_seconds": 2.34,
+    "total_errors": 95,
+    "errors_shown": 5
+  }
+}
