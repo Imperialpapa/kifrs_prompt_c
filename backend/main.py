@@ -57,6 +57,98 @@ ai_interpreter = AIRuleInterpreter()
 # 헬퍼 함수
 # =============================================================================
 
+def parse_rules_from_excel(content: bytes) -> tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """
+    Excel B 파일(규칙 파일)을 파싱하여 자연어 규칙 리스트를 반환
+    - 다중 시트 지원
+    - 병합된 셀(시트명) 처리 (Forward Fill)
+    - 공통 파싱 로직 적용
+    
+    Returns:
+        (natural_language_rules, sheet_row_counts)
+        - sheet_row_counts: {display_sheet_name: total_rows}
+    """
+    all_rules_sheets = pd.read_excel(io.BytesIO(content), header=None, engine='openpyxl', sheet_name=None)
+    natural_language_rules = []
+    sheet_row_counts = {}
+    
+    print(f"   [INFO] Found {len(all_rules_sheets)} sheets in rules file: {list(all_rules_sheets.keys())}")
+
+    for rule_sheet_name, rules_df in all_rules_sheets.items():
+        # 각 시트의 원본 행 수 기록 (헤더 포함)
+        # 여기서 rule_sheet_name은 엑셀 파일의 시트 탭 이름이 아니라, 실제 내용에서 파싱할 이름이어야 함.
+        # 하지만 사용자는 "규칙 파일의 시트"별 행 수를 원할 수도 있고, "내용상 시트 구분"별 행 수를 원할 수도 있음.
+        # 현재 로직은 "내용상 시트 구분"을 따르므로, rules_df 전체 행 수는 엑셀 탭 기준임.
+        # 질문의 의도는 "규칙 파일에 시트1 데이터가 12행..." 이므로, 
+        # B.xlsx가 [시트명, 열, 항목...] 구조라면, '시트명' 컬럼의 값별로 행 수를 세어야 함.
+        
+        print(f"   [INFO] Processing rules sheet: '{rule_sheet_name}' (Rows: {len(rules_df)})")
+        
+        # [중요] 시트명 컬럼(B열, index 1)에 대해 Forward Fill 적용 (병합된 셀 대응)
+        if len(rules_df) > 2:
+            # 안전한 처리를 위해 컬럼을 복사하여 작업
+            # B열(index 1)이 시트명
+            sheet_col = rules_df[1].copy()
+            
+            # 2행(index 2)부터 끝까지에 대해 공백 -> None 치환
+            # (regex=True를 사용하여 공백만 있는 문자열도 처리)
+            sheet_col.iloc[2:] = sheet_col.iloc[2:].replace(r'^\s*$', None, regex=True)
+            
+            # Forward Fill 적용
+            sheet_col.iloc[2:] = sheet_col.iloc[2:].ffill()
+            
+            # 원본 데이터프레임에 다시 할당
+            rules_df[1] = sheet_col
+
+        # 시트별 행 수 집계 (B열 값 기준)
+        # 헤더(2행) 제외하고 카운트
+        if len(rules_df) > 2:
+            sheet_names_series = rules_df.iloc[2:, 1]
+            counts = sheet_names_series.value_counts()
+            for name, count in counts.items():
+                if pd.notna(name):
+                    disp_name = normalize_sheet_name(str(name))
+                    sheet_row_counts[disp_name] = sheet_row_counts.get(disp_name, 0) + count
+
+        # Excel B를 자연어 규칙 리스트로 변환
+        for idx, row in rules_df.iterrows():
+            if idx < 2: continue # 헤더 건너뜀
+
+            num_cols = len(row)
+            # 안전한 접근
+            raw_sheet_name = row.iloc[1] if num_cols > 1 and pd.notna(row.iloc[1]) else ""
+            field_name = row.iloc[3] if num_cols > 3 and pd.notna(row.iloc[3]) else ""
+            
+            # 시트명과 필드명이 있는 경우만 처리
+            if raw_sheet_name:
+                # 비교를 위해 공백 제거된 이름 사용
+                canonical_sheet_name = get_canonical_name(raw_sheet_name)
+                
+                column_letter = row.iloc[2] if num_cols > 2 and pd.notna(row.iloc[2]) else ""
+                validation_rule = row.iloc[4] if num_cols > 4 and pd.notna(row.iloc[4]) else ""
+                condition = row.iloc[5] if num_cols > 5 and pd.notna(row.iloc[5]) else ""
+                note = row.iloc[6] if num_cols > 6 and pd.notna(row.iloc[6]) else ""
+
+                if condition and "해당없음" in str(condition):
+                    continue
+                
+                safe_field_name = field_name if field_name else "(필드명 없음)"
+                rule_text = str(validation_rule) if validation_rule else (f"조건: {condition}" if condition else f"기본 검증 ({safe_field_name})")
+
+                rule_entry = {
+                    "sheet": canonical_sheet_name, # 비교용
+                    "display_sheet_name": normalize_sheet_name(raw_sheet_name), # 표시용
+                    "row": idx + 1,
+                    "column_letter": column_letter,
+                    "field": safe_field_name,
+                    "rule_text": rule_text,
+                    "condition": condition,
+                    "note": note
+                }
+                natural_language_rules.append(rule_entry)
+                
+    return natural_language_rules, sheet_row_counts
+
 def normalize_sheet_name(name: str) -> str:
     """
     시트 이름 정규화
@@ -259,55 +351,8 @@ async def validate_data(
         print("\n[Step 2] Reading validation rules...")
         rules_content = await rules_file.read()
 
-        # B.xlsx 구조: [시트명, 열명, 항목명, 검증 룰, 조건, 비고]
-        # 모든 시트 읽기 (sheet_name=None)
-        all_rules_sheets = pd.read_excel(io.BytesIO(rules_content), header=None, engine='openpyxl', sheet_name=None)
-        
-        natural_language_rules = []
-        
-        print(f"   [INFO] Found {len(all_rules_sheets)} sheets in rules file: {list(all_rules_sheets.keys())}")
-
-        for rule_sheet_name, rules_df in all_rules_sheets.items():
-            print(f"   [INFO] Processing rules sheet: '{rule_sheet_name}' (Rows: {len(rules_df)})")
-            
-            # [중요] 시트명 컬럼(B열, index 1)에 대해 Forward Fill 적용 (병합된 셀 대응)
-            if len(rules_df) > 2:
-                rules_df.iloc[2:, 1] = rules_df.iloc[2:, 1].ffill()
-
-            # Excel B를 자연어 규칙 리스트로 변환
-            for idx, row in rules_df.iterrows():
-                if idx < 2: continue # 헤더 건너뜀
-
-                num_cols = len(row)
-                raw_sheet_name = row.iloc[1] if num_cols > 1 and pd.notna(row.iloc[1]) else ""
-                field_name = row.iloc[3] if num_cols > 3 and pd.notna(row.iloc[3]) else ""
-                
-                if raw_sheet_name:
-                    # 비교를 위해 공백 제거된 이름 사용
-                    canonical_sheet_name = get_canonical_name(raw_sheet_name)
-                    
-                    column_letter = row.iloc[2] if num_cols > 2 and pd.notna(row.iloc[2]) else ""
-                    validation_rule = row.iloc[4] if num_cols > 4 and pd.notna(row.iloc[4]) else ""
-                    condition = row.iloc[5] if num_cols > 5 and pd.notna(row.iloc[5]) else ""
-                    note = row.iloc[6] if num_cols > 6 and pd.notna(row.iloc[6]) else ""
-
-                    if condition and "해당없음" in str(condition):
-                        continue
-                    
-                    safe_field_name = field_name if field_name else "(필드명 없음)"
-                    rule_text = str(validation_rule) if validation_rule else (f"조건: {condition}" if condition else f"기본 검증 ({safe_field_name})")
-
-                    rule_entry = {
-                        "sheet": canonical_sheet_name, # 비교용
-                        "display_sheet_name": normalize_sheet_name(raw_sheet_name), # 표시용
-                        "row": idx + 1,
-                        "column_letter": column_letter,
-                        "field": safe_field_name,
-                        "rule_text": rule_text,
-                        "condition": condition,
-                        "note": note
-                    }
-                    natural_language_rules.append(rule_entry)
+        # 헬퍼 함수를 사용하여 규칙 파싱 (로직 통합)
+        natural_language_rules, sheet_row_counts = parse_rules_from_excel(rules_content)
 
         # 디버깅: 시트별 규칙 개수 출력
         from collections import Counter
@@ -449,7 +494,7 @@ async def validate_data(
             "total_rule_sheets": len(raw_rule_sheets_canonical),
             "matched_sheets": matched_sheets_count,
             "unmatched_sheet_names": unmatched_sheet_names,
-            "all_rule_sheets": raw_rule_sheets_display,
+            "all_rule_sheets": [f"{name} (규칙: {sheet_counts.get(name, 0)}개 / 전체: {sheet_row_counts.get(name, 0)}행)" for name in raw_rule_sheets_display],
             "all_data_sheets": all_data_sheets
         }
 
@@ -501,19 +546,9 @@ async def interpret_rules_only(
     try:
         # Excel B 읽기
         rules_content = await rules_file.read()
-        rules_df = pd.read_excel(io.BytesIO(rules_content))
         
-        # 자연어 규칙 변환
-        natural_language_rules = []
-        for idx, row in rules_df.iterrows():
-            rule_entry = {
-                "sheet": "validation_rules",
-                "row": idx + 2,
-                "field": row.get("field_name", row.get("필드명", "")),
-                "rule_text": row.get("rule_text", row.get("규칙", ""))
-            }
-            if rule_entry["field"] and rule_entry["rule_text"]:
-                natural_language_rules.append(rule_entry)
+        # 헬퍼 함수 사용하여 규칙 파싱 (로직 통합)
+        natural_language_rules, _ = parse_rules_from_excel(rules_content)
         
         # AI 해석
         ai_response = await ai_interpreter.interpret_rules(natural_language_rules)
