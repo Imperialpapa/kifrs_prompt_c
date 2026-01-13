@@ -317,3 +317,71 @@ EXAMPLE_VALIDATION_RESPONSE = {
         "system_version": "1.0.0"
     }
 }
+
+
+# =============================================================================
+# Database-Related Models (Supabase Integration)
+# =============================================================================
+
+class RuleFileUpload(BaseModel):
+    """Request model for uploading rule file to database"""
+    file_name: str
+    file_version: Optional[str] = None
+    uploaded_by: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class RuleFileResponse(BaseModel):
+    """Response model for rule file metadata"""
+    id: str  # UUID as string
+    file_name: str
+    file_version: Optional[str] = None
+    uploaded_by: Optional[str] = None
+    uploaded_at: datetime
+    sheet_count: int
+    total_rules_count: int
+    status: str
+
+
+class RuleSourceType(BaseModel):
+    """Request to specify rule source"""
+    source_type: Literal["file_upload", "database"]
+    rule_file_id: Optional[str] = None  # Required if source_type == "database"
+
+
+class ValidationSessionResponse(BaseModel):
+    """Response for validation session"""
+    session_id: str  # UUID as string
+    session_token: str
+    validation_results: ValidationResponse
+    stored_at: datetime
+
+
+class UserCorrectionRequest(BaseModel):
+    """Request to record user correction"""
+    session_id: str  # UUID as string
+    error_id: Optional[str] = None  # UUID as string
+    correction_action: Literal["mark_false_positive", "adjust_rule", "confirm_error"]
+    correction_reason: str
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    suggested_rule_change: Optional[str] = None
+    corrected_by: str
+
+
+class FalsePositiveFeedback(BaseModel):
+    """Feedback on false positives"""
+    error_id: str  # UUID as string
+    is_false_positive: bool
+    user_explanation: str
+    suggested_rule_adjustment: Optional[str] = None
+    feedback_by: str
+
+
+class AILearningStats(BaseModel):
+    """AI learning statistics"""
+    total_interpretations: int
+    average_confidence: float
+    false_positive_rate: float
+    most_problematic_rules: List[Dict[str, Any]] = Field(default_factory=list)
+    improvement_suggestions: List[str] = Field(default_factory=list)
