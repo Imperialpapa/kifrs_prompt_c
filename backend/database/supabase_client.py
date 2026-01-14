@@ -122,11 +122,18 @@ class SupabaseClient:
 # =============================================================================
 
 # Only initialize if settings are available
+# Use ADMIN CLIENT (service key) to bypass RLS policies
 supabase: Optional[Client] = None
 
 if settings and settings.is_supabase_configured():
     try:
-        supabase = SupabaseClient.get_client()
+        # Use admin client with service key to bypass RLS
+        if settings.SUPABASE_SERVICE_KEY:
+            supabase = SupabaseClient.get_admin_client()
+            print("[Supabase] Using admin client (service key) - RLS bypassed")
+        else:
+            supabase = SupabaseClient.get_client()
+            print("[Supabase] Using regular client (anon key) - RLS policies apply")
     except ValueError as e:
         print(f"[Supabase] Initialization skipped: {str(e)}")
         print("[Supabase] Database features will be disabled.")

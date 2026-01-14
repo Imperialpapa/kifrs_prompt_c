@@ -1,0 +1,134 @@
+"""
+Excel Parsing Utilities
+=======================
+Excel 파일(규칙 파일)을 파싱하여 자연어 규칙 리스트를 추출하는 유틸리티 모듈
+"""
+
+import io
+import re
+from typing import List, Dict, Any, Tuple
+from openpyxl import load_workbook
+
+
+def normalize_sheet_name(name: str) -> str:
+    """
+    시트 이름 정규화
+    - 줄바꿈, 탭 등을 공백으로 치환 (글자 붙음 방지)
+    - 연속된 공백을 단일 공백으로 치환
+
+    Args:
+        name: 원본 시트 이름
+
+    Returns:
+        정규화된 시트 이름
+    """
+    if not isinstance(name, str):
+        return str(name)
+
+    # 제어 문자를 공백으로 치환 (빈 문자열이 아님!)
+    normalized = name.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+
+    # 연속된 공백 제거
+    normalized = re.sub(r'\s+', ' ', normalized)
+
+    return normalized.strip()
+
+
+def get_canonical_name(name: str) -> str:
+    """
+    비교를 위한 정규화 (모든 공백 제거)
+
+    Args:
+        name: 원본 시트 이름
+
+    Returns:
+        Canonical 시트 이름 (공백 제거됨)
+    """
+    norm = normalize_sheet_name(name)
+    return "".join(norm.split())
+
+
+def parse_rules_from_excel(content: bytes) -> Tuple[List[Dict[str, Any]], Dict[str, int], int, int]:
+    """
+    Excel B 파일(규칙 파일)을 파싱하여 자연어 규칙 리스트를 반환
+
+    Args:
+        content: Excel 파일의 바이트 내용
+
+    Returns:
+        Tuple containing:
+        - natural_language_rules: 파싱된 규칙 리스트
+        - sheet_row_counts: 시트별 행 개수 (display name 기준)
+        - total_raw_rows: 전체 원본 행 수
+        - reported_max_row: 엑셀 파일이 메타데이터로 보고하는 총 행 수 (헤더 제외)
+    """
+    wb = load_workbook(io.BytesIO(content), data_only=True)
+    natural_language_rules = []
+    sheet_row_counts = {}
+    total_raw_rows = 0
+    reported_max_row = 0
+
+    print(f"   [INFO] Found {len(wb.sheetnames)} sheets in rules file: {wb.sheetnames}")
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        print(f"   [INFO] Processing rules sheet: '{sheet_name}' (Reported Max Row: {ws.max_row})")
+
+        # 메타데이터 상의 max_row 누적 (헤더 2행 제외)
+        if ws.max_row > 2:
+            reported_max_row += (ws.max_row - 2)
+
+        last_sheet_name_val = None
+        consecutive_empty_rows = 0
+
+        for row_idx, row_values in enumerate(ws.iter_rows(min_row=3, max_row=1000, values_only=True), start=3):
+            if all(cell is None for cell in row_values):
+                consecutive_empty_rows += 1
+                if consecutive_empty_rows >= 5:
+                    break
+                continue
+
+            consecutive_empty_rows = 0
+            total_raw_rows += 1
+
+            raw_sheet_val = row_values[1] if len(row_values) > 1 else None
+            if isinstance(raw_sheet_val, str) and not raw_sheet_val.strip():
+                raw_sheet_val = None
+            if raw_sheet_val is not None:
+                last_sheet_name_val = raw_sheet_val
+
+            # Fallback to actual worksheet name if column B is empty
+            # This handles cases where rules are separated by tabs but column B is left blank
+            current_sheet_name = last_sheet_name_val if last_sheet_name_val else sheet_name
+
+            if current_sheet_name:
+                disp_name = normalize_sheet_name(str(current_sheet_name))
+                sheet_row_counts[disp_name] = sheet_row_counts.get(disp_name, 0) + 1
+
+            if not current_sheet_name:
+                continue
+
+            field_name = row_values[3] if len(row_values) > 3 else None
+            condition = row_values[5] if len(row_values) > 5 else None
+            if condition and "해당없음" in str(condition):
+                continue
+
+            column_letter = row_values[2] if len(row_values) > 2 else ""
+            validation_rule = row_values[4] if len(row_values) > 4 else ""
+            note = row_values[6] if len(row_values) > 6 else ""
+            safe_field_name = str(field_name) if field_name else "(필드명 없음)"
+            rule_text = str(validation_rule) if validation_rule else (f"조건: {condition}" if condition else f"기본 검증 ({safe_field_name})")
+
+            rule_entry = {
+                "sheet": get_canonical_name(str(current_sheet_name)),
+                "display_sheet_name": normalize_sheet_name(str(current_sheet_name)),
+                "row": row_idx,
+                "column_letter": str(column_letter) if column_letter else "",
+                "field": safe_field_name,
+                "rule_text": rule_text,
+                "condition": str(condition) if condition else "",
+                "note": str(note) if note else ""
+            }
+            natural_language_rules.append(rule_entry)
+
+    return natural_language_rules, sheet_row_counts, total_raw_rows, reported_max_row

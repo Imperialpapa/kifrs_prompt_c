@@ -343,6 +343,48 @@ class RuleFileResponse(BaseModel):
     status: str
 
 
+class RuleUpdate(BaseModel):
+    """Request model for updating an individual rule"""
+    field_name: Optional[str] = None
+    rule_text: Optional[str] = None
+    condition: Optional[str] = None
+    note: Optional[str] = None
+    is_active: Optional[bool] = None
+    
+    # AI-related fields (if user wants to manually adjust AI interpretation)
+    ai_rule_type: Optional[str] = None
+    ai_parameters: Optional[Dict[str, Any]] = None
+    ai_error_message: Optional[str] = None
+
+
+class RuleDetail(BaseModel):
+    """Detailed rule information for editing"""
+    id: str
+    rule_file_id: str
+    sheet_name: str
+    display_sheet_name: Optional[str]
+    canonical_sheet_name: Optional[str]
+    row_number: Optional[int]
+    column_letter: Optional[str]
+    field_name: str
+    rule_text: str
+    condition: Optional[str]
+    note: Optional[str]
+    
+    # AI Interpretation
+    ai_rule_id: Optional[str]
+    ai_rule_type: Optional[str]
+    ai_parameters: Optional[Dict[str, Any]]
+    ai_error_message: Optional[str]
+    ai_interpretation_summary: Optional[str]
+    ai_confidence_score: Optional[float]
+    ai_interpreted_at: Optional[datetime]
+    
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
 class RuleSourceType(BaseModel):
     """Request to specify rule source"""
     source_type: Literal["file_upload", "database"]

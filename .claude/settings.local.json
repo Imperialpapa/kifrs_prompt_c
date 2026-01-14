@@ -3,7 +3,15 @@
     "allow": [
       "Bash(python:*)",
       "Bash(dir:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(findstr:*)",
+      "Bash(pip install:*)",
+      "Bash(git add:*)",
+      "Bash(git rm:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nPhase 1 완료: Supabase DB 인프라 구축\n\n주요 변경사항:\n- Supabase 연결 및 Repository 레이어 추가\n- 8개 DB 테이블 스키마 생성 \\(규칙, 검증, 학습 데이터\\)\n- Pydantic 모델 7개 추가 \\(DB 통합용\\)\n- 환경 설정 관리 \\(config.py, .env.example\\)\n- Phase 1 완료 문서 추가 \\(PHASE1_COMPLETE.md\\)\n\n새로 추가된 파일:\n- backend/database/supabase_client.py \\(DB 연결\\)\n- backend/database/rule_repository.py \\(CRUD\\)\n- backend/database/migrations/001_initial_schema.sql\n- backend/config.py \\(Settings\\)\n- .gitignore \\(민감 정보 보호\\)\n\n다음 단계: Phase 2 - 규칙 업로드/다운로드 기능 구현\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git remote set-url:*)",
+      "Bash(git push:*)",
+      "Bash(ls:*)"
     ]
   }
 }

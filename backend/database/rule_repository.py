@@ -312,6 +312,79 @@ class RuleRepository:
             print(f"[RuleRepository] Error updating rule by field: {str(e)}")
             return False
 
+    async def get_rule(self, rule_id: UUID) -> Optional[Dict]:
+        """
+        Retrieve a single rule by ID
+
+        Args:
+            rule_id: UUID of the rule
+
+        Returns:
+            Dict or None: Rule data
+        """
+        try:
+            result = self.client.table('rules') \
+                .select('*') \
+                .eq('id', str(rule_id)) \
+                .execute()
+
+            if result.data and len(result.data) > 0:
+                return result.data[0]
+            return None
+        except Exception as e:
+            print(f"[RuleRepository] Error getting rule: {str(e)}")
+            return None
+
+    async def update_rule(self, rule_id: UUID, updates: Dict[str, Any]) -> bool:
+        """
+        Update an individual rule
+
+        Args:
+            rule_id: UUID of the rule
+            updates: Dictionary of fields to update
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            updates['updated_at'] = datetime.now().isoformat()
+            
+            # Increase version if specific fields are updated (optional logic)
+            # current_rule = await self.get_rule(rule_id)
+            # if current_rule:
+            #     updates['version'] = current_rule.get('version', 1) + 1
+
+            result = self.client.table('rules') \
+                .update(updates) \
+                .eq('id', str(rule_id)) \
+                .execute()
+
+            return len(result.data) > 0
+        except Exception as e:
+            print(f"[RuleRepository] Error updating rule: {str(e)}")
+            return False
+
+    async def delete_rule(self, rule_id: UUID) -> bool:
+        """
+        Permanently delete a rule
+
+        Args:
+            rule_id: UUID of the rule
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            result = self.client.table('rules') \
+                .delete() \
+                .eq('id', str(rule_id)) \
+                .execute()
+
+            return True  # If no exception, consider it successful
+        except Exception as e:
+            print(f"[RuleRepository] Error deleting rule: {str(e)}")
+            return False
+
     async def deactivate_rule(self, rule_id: UUID) -> bool:
         """
         Soft delete a rule

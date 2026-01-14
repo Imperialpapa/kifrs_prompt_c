@@ -11,9 +11,11 @@ Endpoints:
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 import pandas as pd
 import io
+import os
 from typing import List, Dict, Any
 import traceback
 from datetime import datetime
@@ -22,10 +24,22 @@ from models import (
     ValidationResponse,
     AIInterpretationResponse,
     RuleConflict,
-    ValidationErrorGroup
+    ValidationErrorGroup,
+    RuleFileUpload,
+    RuleFileResponse,
+    RuleUpdate,
+    RuleDetail,
+    FalsePositiveFeedback
 )
 from ai_layer import AIRuleInterpreter
 from rule_engine import RuleEngine
+from services.rule_service import RuleService
+from services.ai_cache_service import AICacheService
+from services.validation_service import ValidationService
+from services.feedback_service import FeedbackService
+from services.statistics_service import StatisticsService
+from utils.excel_parser import parse_rules_from_excel, normalize_sheet_name, get_canonical_name
+from utils.common import group_errors
 
 # =============================================================================
 # FastAPI 앱 초기화
@@ -51,172 +65,11 @@ app.add_middleware(
 # =============================================================================
 
 ai_interpreter = AIRuleInterpreter()
-
-
-# =============================================================================
-# 헬퍼 함수
-# =============================================================================
-
-def parse_rules_from_excel(content: bytes) -> tuple[List[Dict[str, Any]], Dict[str, int], int, int]:
-    """
-    Excel B 파일(규칙 파일)을 파싱하여 자연어 규칙 리스트를 반환
-    
-    Returns:
-        (natural_language_rules, sheet_row_counts, total_raw_rows, reported_max_row)
-        - reported_max_row: 엑셀 파일이 메타데이터로 보고하는 총 행 수 (헤더 제외)
-    """
-    from openpyxl import load_workbook
-    
-    wb = load_workbook(io.BytesIO(content), data_only=True)
-    natural_language_rules = []
-    sheet_row_counts = {}
-    total_raw_rows = 0
-    reported_max_row = 0
-    
-    print(f"   [INFO] Found {len(wb.sheetnames)} sheets in rules file: {wb.sheetnames}")
-
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        print(f"   [INFO] Processing rules sheet: '{sheet_name}' (Reported Max Row: {ws.max_row})")
-        
-        # 메타데이터 상의 max_row 누적 (헤더 2행 제외)
-        if ws.max_row > 2:
-            reported_max_row += (ws.max_row - 2)
-        
-        last_sheet_name_val = None 
-        consecutive_empty_rows = 0
-        
-        for row_idx, row_values in enumerate(ws.iter_rows(min_row=3, max_row=1000, values_only=True), start=3):
-            if all(cell is None for cell in row_values):
-                consecutive_empty_rows += 1
-                if consecutive_empty_rows >= 5: 
-                    break
-                continue
-            
-            consecutive_empty_rows = 0
-            total_raw_rows += 1
-            
-            raw_sheet_val = row_values[1] if len(row_values) > 1 else None
-            if isinstance(raw_sheet_val, str) and not raw_sheet_val.strip():
-                raw_sheet_val = None
-            if raw_sheet_val is not None:
-                last_sheet_name_val = raw_sheet_val
-            
-            current_sheet_name = last_sheet_name_val
-            
-            if current_sheet_name:
-                disp_name = normalize_sheet_name(str(current_sheet_name))
-                sheet_row_counts[disp_name] = sheet_row_counts.get(disp_name, 0) + 1
-            
-            if not current_sheet_name:
-                continue
-                
-            field_name = row_values[3] if len(row_values) > 3 else None
-            condition = row_values[5] if len(row_values) > 5 else None
-            if condition and "해당없음" in str(condition):
-                continue
-            
-            column_letter = row_values[2] if len(row_values) > 2 else ""
-            validation_rule = row_values[4] if len(row_values) > 4 else ""
-            note = row_values[6] if len(row_values) > 6 else ""
-            safe_field_name = str(field_name) if field_name else "(필드명 없음)"
-            rule_text = str(validation_rule) if validation_rule else (f"조건: {condition}" if condition else f"기본 검증 ({safe_field_name})")
-            
-            rule_entry = {
-                "sheet": get_canonical_name(str(current_sheet_name)),
-                "display_sheet_name": normalize_sheet_name(str(current_sheet_name)),
-                "row": row_idx,
-                "column_letter": str(column_letter) if column_letter else "",
-                "field": safe_field_name,
-                "rule_text": rule_text,
-                "condition": str(condition) if condition else "",
-                "note": str(note) if note else ""
-            }
-            natural_language_rules.append(rule_entry)
-            
-    return natural_language_rules, sheet_row_counts, total_raw_rows, reported_max_row
-
-def normalize_sheet_name(name: str) -> str:
-    """
-    시트 이름 정규화
-    - 줄바꿈, 탭 등을 공백으로 치환 (글자 붙음 방지)
-    - 연속된 공백을 단일 공백으로 치환
-    """
-    if not isinstance(name, str):
-        return str(name)
-    
-    # 제어 문자를 공백으로 치환 (빈 문자열이 아님!)
-    normalized = name.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-    
-    # 연속된 공백 제거
-    import re
-    normalized = re.sub(r'\s+', ' ', normalized)
-    
-    return normalized.strip()
-
-def get_canonical_name(name: str) -> str:
-    """
-    비교를 위한 정규화 (모든 공백 제거)
-    """
-    norm = normalize_sheet_name(name)
-    return "".join(norm.split())
-
-def group_errors(errors: list) -> List[ValidationErrorGroup]:
-    """
-    동일한 인지 내용을 그룹화하여 집계
-
-    Args:
-        errors: ValidationError 리스트
-
-    Returns:
-        List[ValidationErrorGroup]: 그룹화된 인지 목록
-    """
-    from collections import defaultdict
-
-    # (시트, 컬럼, 규칙ID, 메시지)를 키로 그룹화
-    groups = defaultdict(list)
-
-    for error in errors:
-        key = (
-            error.sheet or "",
-            error.column,
-            error.rule_id,
-            error.message
-        )
-        groups[key].append(error)
-
-    # ValidationErrorGroup 객체 생성
-    error_groups = []
-    for (sheet, column, rule_id, message), error_list in groups.items():
-        # 행 번호 수집
-        affected_rows = [e.row for e in error_list]
-
-        # 샘플 값 수집 (최대 3개, 중복 제거)
-        sample_values = []
-        seen_values = set()
-        for e in error_list:
-            val_str = str(e.actual_value)
-            if val_str not in seen_values and len(sample_values) < 3:
-                sample_values.append(e.actual_value)
-                seen_values.add(val_str)
-
-        error_group = ValidationErrorGroup(
-            sheet=sheet,
-            column=column,
-            rule_id=rule_id,
-            message=message,
-            affected_rows=sorted(affected_rows),
-            count=len(error_list),
-            sample_values=sample_values,
-            expected=error_list[0].expected if error_list else None,
-            source_rule=error_list[0].source_rule if error_list else ""
-        )
-        error_groups.append(error_group)
-
-    # 인지 개수 많은 순으로 정렬
-    error_groups.sort(key=lambda x: x.count, reverse=True)
-
-    return error_groups
+rule_service = RuleService()
+ai_cache_service = AICacheService()
+validation_service = ValidationService()
+feedback_service = FeedbackService()
+statistics_service = StatisticsService()
 
 
 # =============================================================================
@@ -226,23 +79,37 @@ def group_errors(errors: list) -> List[ValidationErrorGroup]:
 @app.get("/")
 async def root():
     """
-    루트 엔드포인트
+    Serve the frontend index.html
+    """
+    # Check if index.html exists in parent or current dir
+    if os.path.exists("../index.html"):
+        return FileResponse("../index.html")
+    elif os.path.exists("index.html"):
+        return FileResponse("index.html")
+    
+    return {
+        "service": "K-IFRS 1019 DBO Validation System",
+        "version": "1.4.1",
+        "status": "operational (Frontend file not found)"
+    }
+
+
+@app.get("/api")
+async def api_info():
+    """
+    API info endpoint
     """
     return {
         "service": "K-IFRS 1019 DBO Validation System",
-        "version": "1.2.5",
-        "build_date": "2025-01-13 10:00:00",
+        "version": "1.4.1",
+        "build_date": "2025-01-13 15:00:00",
         "status": "operational",
         "features": [
             "다중 시트 검증 지원 (자동 매핑)",
             "인지 항목 집계",
-            "동적 AI 규칙 생성"
-        ],
-        "endpoints": {
-            "health": "/health",
-            "validate": "/validate (POST)",
-            "version": "/version (GET)"
-        }
+            "동적 AI 규칙 생성",
+            "규칙 편집기 (Rule Editor)"
+        ]
     }
 
 
@@ -368,71 +235,11 @@ async def validate_data(
         # Step 4: 결정론적 검증 실행 - 시트별 처리 (통합 매칭 로직 적용)
         # =====================================================================
         print("\n[Step 4] Running deterministic validation...")
-        engine = RuleEngine()
-        all_errors = []
-        all_sheets_summary = {}
-
-        # 규칙을 Canonical Name 기준으로 미리 그룹화 (O(1) 조회를 위해)
-        from collections import defaultdict
-        rules_by_sheet = defaultdict(list)
-        for rule in ai_response.rules:
-            rules_by_sheet[rule.source.sheet_name].append(rule)
-
-        # 시트별 데이터 순회 (Canonical Key 사용)
-        for canonical_name, data in sheet_data_map.items():
-            display_name = data["display_name"]
-            df = data["df"]
-            
-            print(f"\n   [SHEET] Validating sheet: '{display_name}' (Canonical: '{canonical_name}')")
-            
-            # 규칙 조회
-            sheet_rules = rules_by_sheet.get(canonical_name, [])
-            
-            if not sheet_rules:
-                print(f"   [WARN] No rules found for sheet: '{display_name}', skipping...")
-                continue
-            
-            # 검증 실행
-            errors = engine.validate(df, sheet_rules)
-            summary = engine.get_summary(len(df), len(sheet_rules))
-
-            # 시트 정보를 에러에 추가
-            for error in errors:
-                error.sheet = display_name
-
-            all_errors.extend(errors)
-            
-            # 요약 정보 저장
-            all_sheets_summary[display_name] = {
-                "total_rows": len(df),
-                "error_rows": summary.error_rows,
-                "valid_rows": summary.valid_rows,
-                "total_errors": len(errors),
-                "rules_applied": len(sheet_rules)
-            }
-
-        # 전체 요약 계산
-        total_rows = sum(s["total_rows"] for s in all_sheets_summary.values())
-        total_error_rows = sum(s["error_rows"] for s in all_sheets_summary.values())
+        validation_res = await validation_service.validate_sheets(sheet_data_map, ai_response.rules)
 
         # =====================================================================
-        # Step 5: 응답 생성
+        # Step 5: 응답 생성 및 메타데이터 추가
         # =====================================================================
-        # 통합 요약 생성
-        from models import ValidationSummary
-        combined_summary = ValidationSummary(
-            total_rows=total_rows,
-            valid_rows=total_rows - total_error_rows,
-            error_rows=total_error_rows,
-            total_errors=len(all_errors),
-            rules_applied=len(ai_response.rules),
-            timestamp=datetime.now()
-        )
-
-        # 인지 내용 집계
-        error_groups = group_errors(all_errors)
-
-        # 매칭 통계 계산 (통합된 자료구조 활용)
         # AI 규칙 개수 집계 (시트별 - Canonical Name 기준)
         from collections import Counter
         rule_counts_by_canonical = Counter(rule.source.sheet_name for rule in ai_response.rules)
@@ -468,36 +275,27 @@ async def validate_data(
             "unmatched_sheet_names": unmatched_sheet_names,
             "all_rule_sheets": display_list,
             "all_data_sheets": all_data_sheets,
-            # [DEBUG CODE] 사용자 요청에 의한 디버깅용 필드 (추후 삭제 가능)
             "total_raw_rows": total_raw_rows, 
             "reported_max_row": reported_max_row,
             "total_rules_count": len(ai_response.rules)
-            # [END DEBUG CODE]
         }
 
-        response = ValidationResponse(
-            validation_status="PASS" if len(all_errors) == 0 else "FAIL",
-            summary=combined_summary,
-            errors=all_errors[:200],  # 최대 200개까지만 반환 (대량 인지 대응)
-            error_groups=error_groups,  # 집계된 인지 목록
-            conflicts=ai_response.conflicts,
-            rules_applied=ai_response.rules,
-            metadata={
-                "employee_file_name": employee_file.filename,
-                "rules_file_name": rules_file.filename,
-                "ai_model_version": "claude-sonnet-4-20250514",
-                "system_version": "1.0.0",
-                "ai_processing_time_seconds": ai_response.processing_time_seconds,
-                "total_errors": len(all_errors),
-                "errors_shown": min(len(all_errors), 200),
-                "error_groups_count": len(error_groups),
-                "sheets_summary": all_sheets_summary,
-                "matching_stats": matching_stats
-            }
-        )
+        # 최종 응답 객체 완성
+        validation_res.conflicts = ai_response.conflicts
+        validation_res.metadata.update({
+            "employee_file_name": employee_file.filename,
+            "rules_file_name": rules_file.filename,
+            "ai_model_version": "claude-sonnet-4-20250514",
+            "system_version": "1.0.0",
+            "ai_processing_time_seconds": ai_response.processing_time_seconds,
+            "total_errors": validation_res.summary.total_errors,
+            "errors_shown": min(validation_res.summary.total_errors, 200),
+            "error_groups_count": len(validation_res.error_groups),
+            "matching_stats": matching_stats
+        })
 
         print("\n[OK] Response ready")
-        return response
+        return validation_res
 
     except Exception as e:
         print(f"\n[ERROR] Error: {str(e)}")
@@ -556,6 +354,407 @@ async def get_kifrs_references():
     """
     from models import KIFRS_1019_REFERENCES
     return KIFRS_1019_REFERENCES
+
+
+# =============================================================================
+# Rule Management Endpoints (Phase 2)
+# =============================================================================
+
+@app.post("/rules/upload-to-db", response_model=RuleFileResponse)
+async def upload_rule_file_to_db(
+    rules_file: UploadFile = File(..., description="검증 규칙 파일 (Excel B)"),
+    file_version: str = "1.0",
+    uploaded_by: str = "system",
+    notes: str = None
+):
+    """
+    규칙 파일을 데이터베이스에 업로드
+
+    Process:
+    1. Excel B 파일 파싱
+    2. rule_files 테이블에 메타데이터 저장
+    3. rules 테이블에 개별 규칙 배치 저장
+    4. 저장된 파일 정보 반환
+
+    Args:
+        rules_file: Excel 규칙 파일
+        file_version: 파일 버전 (기본값: "1.0")
+        uploaded_by: 업로드한 사용자 (기본값: "system")
+        notes: 추가 메모
+
+    Returns:
+        RuleFileResponse: 저장된 규칙 파일 메타데이터
+    """
+    try:
+        print(f"[API] Uploading rule file: {rules_file.filename}")
+
+        # Read file content
+        content = await rules_file.read()
+
+        # Create metadata
+        metadata = RuleFileUpload(
+            file_name=rules_file.filename,
+            file_version=file_version,
+            uploaded_by=uploaded_by,
+            notes=notes
+        )
+
+        # Upload using service
+        response = await rule_service.upload_rule_file(content, metadata)
+
+        print(f"[API] Successfully uploaded rule file: {response.id}")
+        return response
+
+    except Exception as e:
+        print(f"[API] Error uploading rule file: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to upload rule file",
+                "message": str(e)
+            }
+        )
+
+
+@app.get("/rules/files", response_model=List[RuleFileResponse])
+async def list_rule_files(
+    status: str = "active",
+    limit: int = 50,
+    offset: int = 0
+):
+    """
+    저장된 규칙 파일 목록 조회
+
+    Args:
+        status: 필터링할 상태 (기본값: "active")
+        limit: 최대 결과 수 (기본값: 50)
+        offset: 페이지네이션 오프셋 (기본값: 0)
+
+    Returns:
+        List[RuleFileResponse]: 규칙 파일 목록
+    """
+    try:
+        print(f"[API] Listing rule files (status={status}, limit={limit}, offset={offset})")
+        files = await rule_service.list_rule_files(status, limit, offset)
+        return files
+
+    except Exception as e:
+        print(f"[API] Error listing rule files: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to list rule files",
+                "message": str(e)
+            }
+        )
+
+
+@app.get("/rules/files/{file_id}")
+async def get_rule_file_details(file_id: str):
+    """
+    규칙 파일 상세 정보 조회
+
+    Args:
+        file_id: 규칙 파일 UUID
+
+    Returns:
+        Dict: 파일 메타데이터, 통계, 시트별 규칙 정보
+    """
+    try:
+        print(f"[API] Getting rule file details: {file_id}")
+        details = await rule_service.get_rule_file_details(file_id)
+
+        if not details:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "Rule file not found",
+                    "file_id": file_id
+                }
+            )
+
+        return details
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] Error getting rule file details: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to get rule file details",
+                "message": str(e)
+            }
+        )
+
+
+@app.get("/rules/download/{file_id}")
+async def download_rule_file(file_id: str):
+    """
+    데이터베이스에서 규칙을 Excel 파일로 다운로드
+
+    Args:
+        file_id: 규칙 파일 UUID
+
+    Returns:
+        Excel 파일 (StreamingResponse)
+    """
+    try:
+        print(f"[API] Downloading rule file: {file_id}")
+
+        # Export rules to Excel
+        excel_bytes = await rule_service.export_rules_to_excel(file_id)
+        print(f"[API] Excel generated: {len(excel_bytes)} bytes")
+
+        # Get file metadata for filename
+        try:
+            details = await rule_service.get_rule_file_details(file_id)
+            original_filename = details['file_name'] if details else 'rules.xlsx'
+        except Exception as e:
+            print(f"[API] Warning: Could not get file details, using default filename: {e}")
+            original_filename = 'rules.xlsx'
+
+        # Remove extension if exists
+        base_name = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
+
+        # Create download filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{base_name}_exported_{timestamp}.xlsx"
+
+        print(f"[API] Sending file: {filename}")
+
+        # Create response with proper headers
+        return StreamingResponse(
+            io.BytesIO(excel_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(excel_bytes)),
+                "Cache-Control": "no-cache"
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] Error downloading rule file: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to download rule file",
+                "message": str(e),
+                "file_id": file_id
+            }
+        )
+
+
+@app.post("/rules/interpret/{file_id}")
+async def interpret_rules(file_id: str, force_reinterpret: bool = False):
+    """
+    규칙 파일의 AI 해석 실행 또는 재해석
+
+    Args:
+        file_id: 규칙 파일 UUID
+        force_reinterpret: True면 기존 해석 무시하고 재해석
+
+    Returns:
+        Dict: 해석 결과 통계
+    """
+    try:
+        print(f"[API] Starting AI interpretation for file: {file_id} (force={force_reinterpret})")
+
+        result = await ai_cache_service.interpret_and_cache_rules(file_id, force_reinterpret)
+
+        print(f"[API] AI interpretation completed")
+        return {
+            "status": "success",
+            "file_id": file_id,
+            **result
+        }
+
+    except Exception as e:
+        print(f"[API] Error during AI interpretation: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to interpret rules",
+                "message": str(e),
+                "file_id": file_id
+            }
+        )
+
+
+@app.get("/rules/{rule_id}", response_model=RuleDetail)
+async def get_rule_detail(rule_id: str):
+    """
+    개별 규칙 상세 정보 조회
+    """
+    try:
+        rule = await rule_service.get_rule(rule_id)
+        if not rule:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        return rule
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/rules/{rule_id}")
+async def update_rule(rule_id: str, updates: RuleUpdate):
+    """
+    개별 규칙 수정
+    """
+    try:
+        success = await rule_service.update_rule(rule_id, updates.dict(exclude_unset=True))
+        if not success:
+            raise HTTPException(status_code=404, detail="Rule not found or no changes made")
+        return {"status": "success", "message": "Rule updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/rules/{rule_id}")
+async def delete_rule(rule_id: str, permanent: bool = False):
+    """
+    개별 규칙 삭제 (기본값: 비활성화)
+    """
+    try:
+        success = await rule_service.delete_rule(rule_id, permanent)
+        if not success:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        return {"status": "success", "message": "Rule deleted/deactivated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Validation Session Endpoints (Phase 3)
+# =============================================================================
+
+@app.post("/validate-with-db-rules")
+async def validate_with_db_rules(
+    rule_file_id: str,
+    employee_file: UploadFile = File(..., description="직원 데이터 파일 (Excel A)")
+):
+    """
+    DB에 저장된 규칙을 사용하여 데이터 검증 수행
+
+    Args:
+        rule_file_id: 규칙 파일 UUID
+        employee_file: 직원 데이터 파일
+
+    Returns:
+        Dict: 검증 결과 요약 및 세션 ID
+    """
+    try:
+        print(f"[API] Validating with DB rules: {rule_file_id}")
+        
+        # Read file content
+        content = await employee_file.read()
+        
+        result = await validation_service.validate_with_db_rules(
+            rule_file_id=rule_file_id,
+            employee_file_content=content,
+            employee_file_name=employee_file.filename
+        )
+        
+        return result
+
+    except ValueError as ve:
+        print(f"[API] Validation error: {str(ve)}")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "Validation failed",
+                "message": str(ve)
+            }
+        )
+    except Exception as e:
+        print(f"[API] Unexpected error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Validation failed",
+                "message": str(e)
+            }
+        )
+
+
+@app.get("/sessions")
+async def list_validation_sessions(
+    limit: int = 50,
+    offset: int = 0
+):
+    """
+    검증 세션 목록 조회
+    """
+    try:
+        sessions = await validation_service.list_sessions(limit, offset)
+        return sessions
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": str(e)}
+        )
+
+
+@app.get("/sessions/{session_id}")
+async def get_session_details(session_id: str):
+    """
+    세션 상세 정보 및 에러 목록 조회
+    """
+    try:
+        details = await validation_service.get_session_details(session_id)
+        if not details:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return details
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": str(e)}
+        )
+
+
+@app.post("/feedback/false-positive")
+async def submit_false_positive_feedback(feedback: FalsePositiveFeedback):
+    """
+    False Positive 피드백 제출
+    """
+    try:
+        result = await feedback_service.submit_false_positive_feedback(feedback)
+        return {"status": "success", "data": result}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": str(e)}
+        )
+
+
+@app.get("/statistics/dashboard")
+async def get_dashboard_statistics():
+    """
+    대시보드 통계 조회
+    """
+    try:
+        return await statistics_service.get_dashboard_statistics()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": str(e)}
+        )
 
 
 @app.post("/download-results")
