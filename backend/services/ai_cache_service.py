@@ -32,7 +32,8 @@ class AICacheService:
     async def interpret_and_cache_rules(
         self,
         file_id: str,
-        force_reinterpret: bool = False
+        force_reinterpret: bool = False,
+        force_local: bool = False
     ) -> Dict[str, Any]:
         """
         규칙 파일의 모든 규칙을 AI로 해석하고 캐싱
@@ -109,9 +110,12 @@ class AICacheService:
         # Step 3: AI 해석
         natural_rules = [r["natural_rule"] for r in rules_to_interpret]
 
-        print(f"[AICacheService] Calling AI interpreter...")
+        # force_local이면 로컬 파서만 사용
+        provider = "local" if force_local else None
+
+        print(f"[AICacheService] Calling AI interpreter... (force_local={force_local})")
         try:
-            ai_response = await self.ai_interpreter.interpret_rules(natural_rules)
+            ai_response = await self.ai_interpreter.interpret_rules(natural_rules, provider=provider)
             print(f"[AICacheService] AI interpretation completed")
             print(f"   - Interpreted rules: {len(ai_response.rules)}")
             print(f"   - Conflicts: {len(ai_response.conflicts)}")
@@ -141,6 +145,9 @@ class AICacheService:
             rule_id = db_rule['id']
 
             # AI 해석 데이터 준비
+            # 실제 사용된 엔진에 따라 model_version 설정
+            actual_model = "local-parser" if force_local or not self.ai_interpreter.use_cloud_ai else f"cloud-{self.ai_interpreter.default_provider}"
+
             ai_data = {
                 "ai_rule_id": interpreted_rule.rule_id,
                 "ai_rule_type": interpreted_rule.rule_type,
@@ -149,7 +156,7 @@ class AICacheService:
                 "ai_interpretation_summary": interpreted_rule.ai_interpretation_summary,
                 "ai_confidence_score": float(interpreted_rule.confidence_score),
                 "ai_interpreted_at": datetime.now().isoformat(),
-                "ai_model_version": "claude-sonnet-4-20250514"
+                "ai_model_version": actual_model
             }
 
             try:
@@ -183,13 +190,17 @@ class AICacheService:
         print(f"   - Failed: {failed_count}")
         print(f"   - Total time: {processing_time:.2f}s")
 
+        # 사용된 엔진 확인
+        engine_used = "local" if force_local else ("cloud" if self.ai_interpreter.use_cloud_ai else "local")
+
         return {
             "total_rules": total_rules,
             "interpreted_rules": interpreted_count,
             "skipped_rules": skipped_count,
             "failed_rules": failed_count,
             "processing_time_seconds": processing_time,
-            "conflicts": [c.dict() for c in ai_response.conflicts]
+            "conflicts": [c.dict() for c in ai_response.conflicts],
+            "engine": engine_used
         }
 
     async def _log_interpretation(
@@ -209,6 +220,9 @@ class AICacheService:
             ai_response: AI 응답 객체
         """
         try:
+            # 실제 사용된 엔진 확인
+            actual_model = "local-parser" if not self.ai_interpreter.use_cloud_ai else f"cloud-{self.ai_interpreter.default_provider}"
+
             # 각 해석된 규칙에 대한 로그
             for rule in ai_response.rules:
                 log_data = {
@@ -219,7 +233,7 @@ class AICacheService:
                     "interpreted_rule_type": rule.rule_type,
                     "interpreted_parameters": rule.parameters,
                     "confidence_score": float(rule.confidence_score),
-                    "ai_model_version": "claude-sonnet-4-20250514",
+                    "ai_model_version": actual_model,
                     "processing_time_seconds": ai_response.processing_time_seconds / len(ai_response.rules) if ai_response.rules else 0
                 }
 

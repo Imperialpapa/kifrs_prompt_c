@@ -127,9 +127,18 @@ class ValidationService:
         # Step 1: 규칙 로드
         print(f"[ValidationService] Loading rules from DB: {rule_file_id}")
         validation_rules = await self.ai_cache_service.get_cached_rules_as_validation_rules(rule_file_id)
-        
+
+        # Step 1.5: AI 해석이 없으면 자동으로 실행
         if not validation_rules:
-            raise ValueError("해당 파일에 대한 AI 해석된 규칙이 없습니다. 먼저 AI 해석을 실행해주세요.")
+            print(f"[ValidationService] No AI interpreted rules found. Running auto-interpretation...")
+            interpret_result = await self.ai_cache_service.interpret_and_cache_rules(rule_file_id)
+            print(f"[ValidationService] Auto-interpretation completed: {interpret_result}")
+
+            # 다시 로드
+            validation_rules = await self.ai_cache_service.get_cached_rules_as_validation_rules(rule_file_id)
+
+            if not validation_rules:
+                raise ValueError("규칙 해석에 실패했습니다. 규칙 파일을 확인해주세요.")
 
         # Step 2: 직원 데이터 파싱
         try:

@@ -12,28 +12,32 @@ from models import ValidationErrorGroup
 
 def convert_numpy_types(obj):
     """
-    Recursively convert numpy types to standard Python types for JSON serialization.
-    Handles NaN/Infinity by converting to None.
+    현장 투입용 고성능 데이터 변환기.
+    Numpy, Pandas 타입을 표준 Python 타입으로 변환하고 JSON 비호환 값(NaN, Inf)을 처리합니다.
     """
+    if obj is None:
+        return None
+        
     if isinstance(obj, dict):
-        return {k: convert_numpy_types(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
+        return {str(k): convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple, set)):
         return [convert_numpy_types(i) for i in obj]
     elif isinstance(obj, (np.int64, np.int32, np.int16, np.int8)):
         return int(obj)
-    elif isinstance(obj, (np.float64, np.float32, np.float16)):
+    elif isinstance(obj, (np.float64, np.float32, np.float16, float)):
         val = float(obj)
         if np.isnan(val) or np.isinf(val):
             return None
         return val
-    elif isinstance(obj, float):
-        if np.isnan(obj) or np.isinf(obj):
-            return None
-        return obj
     elif isinstance(obj, (np.bool_)):
         return bool(obj)
     elif pd.isna(obj):
         return None
+    
+    # 그 외 타입은 문자열로 변환하여 안전하게 반환
+    if hasattr(obj, 'isoformat'): # datetime 등 처리
+        return obj.isoformat()
+        
     return obj
 
 def group_errors(errors: list) -> List[ValidationErrorGroup]:

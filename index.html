@@ -104,15 +104,95 @@
         </div>
 
         <div class="absolute bottom-0 w-full p-4 border-t border-slate-100 bg-white">
-            <div class="space-y-1">
-                <div class="flex items-center gap-2">
+            <div class="space-y-3">
+                <!-- Settings Button -->
+                <button @click="settingsModalOpen = true" class="w-full flex items-center gap-3 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 rounded-lg transition-colors">
+                    <i class="ph ph-gear text-lg"></i>
+                    <span>설정 (AI 모델)</span>
+                </button>
+                
+                <div class="flex items-center gap-2 px-4">
                     <div class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
                     <span class="text-xs font-semibold text-slate-600">System Online</span>
                 </div>
-                <div class="text-[10px] text-slate-400 font-mono leading-tight">
+                <div class="text-[10px] text-slate-400 font-mono leading-tight px-4">
                     <div x-text="frontendVersion"></div>
                     <div x-text="backendVersion"></div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div x-show="settingsModalOpen" x-cloak class="fixed inset-0 bg-black/50 z-[80] flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-6" @click.stop>
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+                    <i class="ph-fill ph-gear text-slate-500"></i>
+                    환경 설정
+                </h3>
+                <button @click="settingsModalOpen = false" class="text-slate-400 hover:text-slate-600">
+                    <i class="ph ph-x text-xl"></i>
+                </button>
+            </div>
+
+            <div class="space-y-6">
+                <!-- AI Provider Selection -->
+                <div>
+                    <label class="block text-sm font-bold text-slate-700 mb-3">AI 엔진 선택</label>
+                    <div class="grid grid-cols-1 gap-3">
+                        <label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer transition-all hover:border-indigo-300"
+                               :class="aiProvider === 'openai' ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-500' : 'border-slate-200'">
+                            <div class="flex items-center gap-3">
+                                <div class="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center text-green-600">
+                                    <i class="ph-fill ph-openai-logo"></i>
+                                </div>
+                                <div>
+                                    <div class="font-semibold text-slate-900 text-sm">OpenAI (GPT-4o)</div>
+                                    <div class="text-xs text-slate-500">기본값. 균형 잡힌 성능.</div>
+                                </div>
+                            </div>
+                            <input type="radio" name="ai_provider" value="openai" x-model="aiProvider" class="text-indigo-600 focus:ring-indigo-500">
+                        </label>
+
+                        <label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer transition-all hover:border-blue-300"
+                               :class="aiProvider === 'gemini' ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-500' : 'border-slate-200'">
+                            <div class="flex items-center gap-3">
+                                <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600">
+                                    <i class="ph-fill ph-google-logo"></i>
+                                </div>
+                                <div>
+                                    <div class="font-semibold text-slate-900 text-sm">Google (Gemini 1.5)</div>
+                                    <div class="text-xs text-slate-500">빠른 속도와 긴 컨텍스트 처리.</div>
+                                </div>
+                            </div>
+                            <input type="radio" name="ai_provider" value="gemini" x-model="aiProvider" class="text-blue-600 focus:ring-blue-500">
+                        </label>
+
+                        <label class="flex items-center justify-between p-3 border rounded-lg cursor-pointer transition-all hover:border-orange-300"
+                               :class="aiProvider === 'anthropic' ? 'border-orange-500 bg-orange-50 ring-1 ring-orange-500' : 'border-slate-200'">
+                            <div class="flex items-center gap-3">
+                                <div class="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center text-orange-600">
+                                    <i class="ph-fill ph-brain"></i>
+                                </div>
+                                <div>
+                                    <div class="font-semibold text-slate-900 text-sm">Anthropic (Claude 3)</div>
+                                    <div class="text-xs text-slate-500">가장 뛰어난 한국어 이해 능력.</div>
+                                </div>
+                            </div>
+                            <input type="radio" name="ai_provider" value="anthropic" x-model="aiProvider" class="text-orange-600 focus:ring-orange-500">
+                        </label>
+                    </div>
+                    <p class="mt-2 text-xs text-slate-400">
+                        * 선택한 AI의 API Key가 .env 파일에 설정되어 있어야 합니다.
+                    </p>
+                </div>
+            </div>
+
+            <div class="mt-8 flex justify-end">
+                <button @click="settingsModalOpen = false" class="px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-900 transition-colors text-sm font-medium">
+                    닫기
+                </button>
             </div>
         </div>
     </div>
@@ -188,22 +268,19 @@
                         </div>
                     </div>
 
-                    <!-- Action Button -->
+                    <!-- Status Area -->
                     <div class="flex flex-col items-center gap-4">
-                        <button @click="validateFiles" 
-                           class="w-full py-4 bg-primary-600 text-white rounded-xl font-bold text-lg shadow-lg shadow-primary-200 transition-all hover:bg-primary-700 hover:scale-[1.02] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 flex items-center justify-center gap-3"
-                           :disabled="!fileA || !selectedSavedRuleId || isLoading">
-                           <span x-show="!isLoading">검증 시작하기</span>
-                           <span x-show="isLoading">분석 중입니다...</span>
-                           <i class="ph-bold ph-arrow-right" x-show="!isLoading"></i>
-                           <i class="ph-bold ph-spinner animate-spin" x-show="isLoading"></i>
-                       </button>
-                       
+                       <!-- 로딩 상태 표시 -->
+                       <div x-show="isLoading" class="w-full py-4 bg-primary-100 text-primary-700 rounded-xl font-bold text-lg flex items-center justify-center gap-3">
+                           <i class="ph-bold ph-spinner animate-spin"></i>
+                           <span>분석 중입니다...</span>
+                       </div>
+
                        <!-- Helper Text -->
-                       <p class="text-sm text-slate-400" x-show="!fileA || !selectedSavedRuleId">
+                       <p class="text-sm text-slate-400" x-show="!isLoading && (!fileA || !selectedSavedRuleId)">
                            <i class="ph-fill ph-info mr-1"></i>
                            <span x-show="!selectedSavedRuleId">좌측 메뉴에서 규칙을 먼저 선택해주세요.</span>
-                           <span x-show="selectedSavedRuleId && !fileA">데이터 파일을 업로드하면 활성화됩니다.</span>
+                           <span x-show="selectedSavedRuleId && !fileA">데이터 파일을 업로드하면 자동으로 검증이 시작됩니다.</span>
                        </p>
                     </div>
                 </div>
@@ -337,10 +414,10 @@
                                         x-show="results?.metadata?.sheets_summary[sheetName]"> <!-- Ensure sheet exists in summary -->
                                     <span x-text="sheetName"></span>
                                     <span class="text-xs px-1.5 py-0.5 rounded-full"
-                                          :class="selectedSheet === sheetName 
-                                              ? 'bg-white/20 text-white' 
-                                              : (results.metadata.sheets_summary[sheetName].error_rows > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600')"
-                                          x-text="results.metadata.sheets_summary[sheetName].error_rows > 0 ? results.metadata.sheets_summary[sheetName].error_rows : 'OK'"></span>
+                                          :class="selectedSheet === sheetName
+                                              ? 'bg-white/20 text-white'
+                                              : (results.metadata.sheets_summary?.[sheetName]?.error_rows > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600')"
+                                          x-text="results.metadata.sheets_summary?.[sheetName]?.error_rows > 0 ? results.metadata.sheets_summary[sheetName].error_rows : 'OK'"></span>
                                 </button>
                             </template>
                         </div>
@@ -437,6 +514,230 @@
 
                         </div>
                     </div>
+
+                    <!-- Error Fix Section with Tabs (오류 항목 수정하기) -->
+                    <template x-if="results?.summary?.error_rows > 0">
+                        <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                            <!-- Section Header -->
+                            <div class="flex items-center justify-between p-4 border-b border-slate-200 bg-slate-50">
+                                <h3 class="font-bold text-slate-800 flex items-center gap-2">
+                                    <i class="ph-fill ph-wrench text-amber-500"></i>
+                                    오류 항목 수정하기
+                                </h3>
+                                <div class="flex items-center gap-2 text-sm">
+                                    <span class="text-slate-500">선택:</span>
+                                    <span class="font-bold text-indigo-600" x-text="selectedFixItems.length"></span>
+                                    <span class="text-slate-400">개 /</span>
+                                    <span class="font-bold text-indigo-600" x-text="getSelectedFixCount()"></span>
+                                    <span class="text-slate-400">건</span>
+                                </div>
+                            </div>
+
+                            <!-- Tab Navigation -->
+                            <div class="flex border-b border-slate-200">
+                                <button @click="fixActiveTab = 'before'"
+                                        class="flex-1 px-4 py-3 text-sm font-medium transition-colors relative"
+                                        :class="fixActiveTab === 'before'
+                                            ? 'text-indigo-600 bg-white'
+                                            : 'text-slate-500 hover:text-slate-700 bg-slate-50'">
+                                    <span class="flex items-center justify-center gap-2">
+                                        <i class="ph ph-list-checks"></i>
+                                        수정 전 (항목 선택)
+                                    </span>
+                                    <div x-show="fixActiveTab === 'before'"
+                                         class="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600"></div>
+                                </button>
+                                <button @click="fixActiveTab = 'after'; generateFixPreview()"
+                                        class="flex-1 px-4 py-3 text-sm font-medium transition-colors relative"
+                                        :class="fixActiveTab === 'after'
+                                            ? 'text-indigo-600 bg-white'
+                                            : 'text-slate-500 hover:text-slate-700 bg-slate-50'"
+                                        :disabled="selectedFixItems.length === 0">
+                                    <span class="flex items-center justify-center gap-2">
+                                        <i class="ph ph-eye"></i>
+                                        수정 후 (미리보기)
+                                        <span x-show="selectedFixItems.length > 0"
+                                              class="px-1.5 py-0.5 text-xs rounded-full bg-indigo-100 text-indigo-600"
+                                              x-text="getSelectedFixCount() + '건'"></span>
+                                    </span>
+                                    <div x-show="fixActiveTab === 'after'"
+                                         class="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600"></div>
+                                </button>
+                            </div>
+
+                            <!-- Tab Content: Before (항목 선택) -->
+                            <div x-show="fixActiveTab === 'before'" class="p-4">
+                                <!-- Filters -->
+                                <div class="flex flex-wrap items-center gap-2 mb-4">
+                                    <button @click="selectAllFixableItems()"
+                                            class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 hover:bg-slate-50 transition-colors">
+                                        <i class="ph ph-checks mr-1"></i>전체 선택
+                                    </button>
+                                    <button @click="selectedFixItems = []"
+                                            class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 hover:bg-slate-50 transition-colors"
+                                            :disabled="selectedFixItems.length === 0">
+                                        <i class="ph ph-x mr-1"></i>선택 해제
+                                    </button>
+                                    <div class="flex-1"></div>
+                                    <select x-model="fixFilterSheet"
+                                            class="text-xs border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+                                        <option value="all">모든 시트</option>
+                                        <template x-for="sheet in getUniqueSheets()" :key="sheet">
+                                            <option :value="sheet" x-text="sheet"></option>
+                                        </template>
+                                    </select>
+                                </div>
+
+                                <!-- Error List -->
+                                <div class="space-y-2 max-h-80 overflow-y-auto custom-scrollbar">
+                                    <template x-for="(group, idx) in getFilteredErrorsBySheetAndColumn()" :key="group.key">
+                                        <div @click="toggleFixItem(group.key, group.autoFixable)"
+                                             class="flex items-start gap-3 p-3 rounded-lg border transition-all"
+                                             :class="group.autoFixable
+                                                 ? (isFixItemSelected(group.key) ? 'border-indigo-500 bg-indigo-50 cursor-pointer' : 'border-slate-200 hover:border-indigo-300 hover:bg-slate-50 cursor-pointer')
+                                                 : 'border-slate-100 bg-slate-50 cursor-not-allowed opacity-60'">
+                                            <input type="checkbox"
+                                                   :checked="isFixItemSelected(group.key)"
+                                                   :disabled="!group.autoFixable"
+                                                   @click.stop="toggleFixItem(group.key, group.autoFixable)"
+                                                   class="mt-1 w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500">
+                                            <div class="flex-1 min-w-0">
+                                                <div class="flex items-center gap-2 flex-wrap">
+                                                    <span class="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700 font-medium" x-text="group.sheet"></span>
+                                                    <span class="font-semibold text-slate-800" x-text="group.column"></span>
+                                                    <span class="text-xs px-2 py-0.5 rounded-full"
+                                                          :class="group.autoFixable ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'"
+                                                          x-text="group.autoFixable ? group.fixDescription : '자동수정 불가'"></span>
+                                                </div>
+                                                <div class="flex items-center gap-4 mt-1">
+                                                    <span class="text-xs font-medium text-indigo-600" x-text="group.count + '건'"></span>
+                                                    <span class="text-xs text-slate-400" x-show="group.sampleValues.length > 0">
+                                                        예시: <span x-text="group.sampleValues.slice(0, 2).map(v => '\"' + v + '\"').join(', ')"></span>
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </template>
+
+                                    <div x-show="getFilteredErrorsBySheetAndColumn().length === 0"
+                                         class="text-center py-8 text-slate-400">
+                                        <i class="ph ph-funnel text-3xl mb-2"></i>
+                                        <p class="text-sm">필터 조건에 맞는 항목이 없습니다.</p>
+                                    </div>
+                                </div>
+
+                                <!-- Bottom Guide -->
+                                <div class="mt-4 pt-4 border-t border-slate-200 text-center text-sm text-slate-500">
+                                    <i class="ph ph-arrow-right mr-1"></i>
+                                    항목을 선택한 후 <span class="font-medium text-indigo-600">"수정 후"</span> 탭에서 결과를 확인하세요.
+                                </div>
+                            </div>
+
+                            <!-- Tab Content: After (미리보기) -->
+                            <div x-show="fixActiveTab === 'after'" class="p-4">
+                                <!-- No Selection Warning -->
+                                <div x-show="selectedFixItems.length === 0" class="text-center py-12">
+                                    <i class="ph ph-cursor-click text-4xl text-slate-300 mb-3"></i>
+                                    <p class="text-slate-500">"수정 전" 탭에서 수정할 항목을 먼저 선택해주세요.</p>
+                                </div>
+
+                                <!-- Preview Content -->
+                                <div x-show="selectedFixItems.length > 0">
+                                    <!-- Summary Stats -->
+                                    <div class="grid grid-cols-4 gap-3 mb-4">
+                                        <div class="bg-slate-50 rounded-lg p-3 text-center">
+                                            <div class="text-2xl font-bold text-slate-700" x-text="fixPreview.total || 0"></div>
+                                            <div class="text-xs text-slate-500">총 대상</div>
+                                        </div>
+                                        <div class="bg-green-50 rounded-lg p-3 text-center">
+                                            <div class="text-2xl font-bold text-green-600" x-text="fixPreview.success || 0"></div>
+                                            <div class="text-xs text-green-600">수정 성공</div>
+                                        </div>
+                                        <div class="bg-red-50 rounded-lg p-3 text-center">
+                                            <div class="text-2xl font-bold text-red-500" x-text="fixPreview.fail || 0"></div>
+                                            <div class="text-xs text-red-500">수정 실패</div>
+                                        </div>
+                                        <div class="bg-indigo-50 rounded-lg p-3 text-center">
+                                            <div class="text-2xl font-bold text-indigo-600" x-text="(fixPreview.successRate || 0) + '%'"></div>
+                                            <div class="text-xs text-indigo-600">성공률</div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Filter -->
+                                    <div class="flex items-center gap-2 mb-3">
+                                        <select x-model="fixPreviewFilter"
+                                                class="text-xs border border-slate-300 rounded-lg px-2 py-1.5 bg-white">
+                                            <option value="all">전체 보기</option>
+                                            <option value="success">성공만 보기</option>
+                                            <option value="fail">실패만 보기</option>
+                                        </select>
+                                        <span class="text-xs text-slate-400" x-text="'표시: ' + getFilteredPreviewItems().length + '건'"></span>
+                                    </div>
+
+                                    <!-- Preview Table -->
+                                    <div class="border border-slate-200 rounded-lg overflow-hidden">
+                                        <table class="w-full text-sm">
+                                            <thead class="bg-slate-50 text-slate-600">
+                                                <tr>
+                                                    <th class="px-3 py-2 text-left font-medium">시트</th>
+                                                    <th class="px-3 py-2 text-left font-medium">컬럼</th>
+                                                    <th class="px-3 py-2 text-left font-medium">행</th>
+                                                    <th class="px-3 py-2 text-left font-medium">수정 전</th>
+                                                    <th class="px-3 py-2 text-center font-medium"></th>
+                                                    <th class="px-3 py-2 text-left font-medium">수정 후</th>
+                                                    <th class="px-3 py-2 text-center font-medium">상태</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y divide-slate-100 max-h-60 overflow-y-auto">
+                                                <template x-for="(item, idx) in getFilteredPreviewItems().slice(0, 50)" :key="idx">
+                                                    <tr class="hover:bg-slate-50">
+                                                        <td class="px-3 py-2 text-xs text-slate-500" x-text="item.sheet"></td>
+                                                        <td class="px-3 py-2 font-medium text-slate-700" x-text="item.column"></td>
+                                                        <td class="px-3 py-2 text-slate-500" x-text="item.row"></td>
+                                                        <td class="px-3 py-2">
+                                                            <span class="px-2 py-1 bg-red-50 text-red-600 rounded text-xs font-mono" x-text="item.before"></span>
+                                                        </td>
+                                                        <td class="px-3 py-2 text-center">
+                                                            <i class="ph ph-arrow-right text-slate-300"></i>
+                                                        </td>
+                                                        <td class="px-3 py-2">
+                                                            <span class="px-2 py-1 rounded text-xs font-mono"
+                                                                  :class="item.success ? 'bg-green-50 text-green-600' : 'bg-slate-100 text-slate-400'"
+                                                                  x-text="item.after"></span>
+                                                        </td>
+                                                        <td class="px-3 py-2 text-center">
+                                                            <i class="ph-fill"
+                                                               :class="item.success ? 'ph-check-circle text-green-500' : 'ph-x-circle text-red-400'"></i>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                            </tbody>
+                                        </table>
+                                        <div x-show="getFilteredPreviewItems().length > 50"
+                                             class="px-3 py-2 bg-slate-50 text-xs text-slate-500 text-center border-t border-slate-200">
+                                            ... 외 <span x-text="getFilteredPreviewItems().length - 50"></span>건 더 있음
+                                        </div>
+                                    </div>
+
+                                    <!-- Download Button -->
+                                    <div class="mt-4 pt-4 border-t border-slate-200 flex items-center justify-between">
+                                        <div class="text-sm text-slate-500">
+                                            <i class="ph ph-info mr-1"></i>
+                                            수정된 셀은 <span class="px-1 py-0.5 bg-yellow-200 rounded text-xs">노란색</span>,
+                                            실패한 셀은 <span class="px-1 py-0.5 bg-red-200 rounded text-xs">빨간색</span>으로 표시됩니다.
+                                        </div>
+                                        <button @click="downloadFixedFile()"
+                                                class="px-5 py-2.5 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+                                                :disabled="isDownloading || fixPreview.success === 0">
+                                            <i class="ph ph-download-simple text-lg"></i>
+                                            <span x-text="isDownloading ? '생성 중...' : '수정 파일 다운로드'"></span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+
                 </div>
             </div>
 
@@ -462,13 +763,17 @@
                             <select x-model="filterSheet" @change="currentPage = 1"
                                     class="px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 text-sm bg-white">
                                 <option value="all">모든 시트</option>
-                                <template x-for="sheet in Object.keys(results?.metadata?.sheets_summary || {})" :key="sheet">
-                                    <option :value="sheet" x-text="sheet"></option>
+                                <template x-for="sheet in (results?.metadata?.sheet_order || Object.keys(results?.metadata?.sheets_summary || {}))" :key="sheet">
+                                    <option :value="sheet" x-text="sheet" x-show="results?.metadata?.sheets_summary[sheet]"></option>
                                 </template>
                             </select>
                         </div>
 
                         <div class="flex items-center gap-2">
+                            <button @click="openSmartFixModal" class="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm text-sm">
+                                <i class="ph-fill ph-magic-wand"></i>
+                                <span>AI 수정 제안</span>
+                            </button>
                             <button @click="downloadExcel" class="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-sm text-sm">
                                 <i class="ph ph-file-xls text-lg"></i>
                                 <span>Excel</span>
@@ -724,6 +1029,12 @@
                                                 <i class="ph ph-eye"></i>
                                                 <span>상세</span>
                                             </button>
+                                            <button @click="reinterpretRules(file.id)"
+                                                    class="px-3 py-2 text-sm bg-amber-100 hover:bg-amber-200 text-amber-700 rounded-lg transition-colors flex items-center gap-1"
+                                                    title="AI 해석 오류 시 로컬 파서로 재해석">
+                                                <i class="ph ph-arrows-clockwise"></i>
+                                                <span>재해석</span>
+                                            </button>
                                             <button @click="downloadRuleFile(file.id, file.file_name)"
                                                     class="px-3 py-2 text-sm bg-primary-100 hover:bg-primary-200 text-primary-700 rounded-lg transition-colors flex items-center gap-1">
                                                 <i class="ph ph-download-simple"></i>
@@ -743,6 +1054,7 @@
                 </div>
 
                 <!-- Rule Edit Modal -->
+                <template x-if="editingRule">
                 <div x-show="editingRule" x-cloak class="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" @click.self="cancelEditingRule">
                     <div class="bg-white rounded-xl shadow-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto" @click.stop>
                         <div class="flex items-center justify-between mb-6">
@@ -852,6 +1164,143 @@
                         </div>
                     </div>
                 </div>
+                </template>
+
+                <!-- Smart Fix Modal -->
+                <div x-show="fixModalOpen" x-cloak class="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
+                    <div class="bg-white rounded-xl shadow-xl max-w-4xl w-full h-[80vh] flex flex-col" @click.stop>
+                        
+                        <!-- Header -->
+                        <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                            <div>
+                                <h3 class="text-xl font-bold text-slate-900 flex items-center gap-2">
+                                    <i class="ph-fill ph-magic-wand text-indigo-500"></i>
+                                    AI 스마트 수정 어시스턴트
+                                </h3>
+                                <p class="text-sm text-slate-500 mt-1">AI가 분석한 수정 제안을 검토하고 일괄 적용하세요.</p>
+                            </div>
+                            <button @click="fixModalOpen = false" class="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-50">
+                                <i class="ph ph-x text-xl"></i>
+                            </button>
+                        </div>
+
+                        <!-- Body -->
+                        <div class="flex-1 overflow-hidden flex flex-col">
+                            
+                            <!-- Loading State -->
+                            <div x-show="isFixLoading" class="flex-1 flex flex-col items-center justify-center space-y-4">
+                                <div class="relative w-20 h-20">
+                                    <div class="absolute inset-0 border-4 border-slate-100 rounded-full"></div>
+                                    <div class="absolute inset-0 border-4 border-indigo-500 rounded-full border-t-transparent animate-spin"></div>
+                                    <i class="ph-fill ph-brain absolute inset-0 m-auto text-2xl text-indigo-500 flex items-center justify-center animate-pulse"></i>
+                                </div>
+                                <div class="text-center">
+                                    <h4 class="text-lg font-semibold text-slate-800">AI가 오류를 분석 중입니다...</h4>
+                                    <p class="text-sm text-slate-500">과거 수정 패턴과 규칙을 대조하고 있습니다.</p>
+                                </div>
+                            </div>
+
+                            <!-- Content State -->
+                            <div x-show="!isFixLoading" class="flex-1 flex flex-col overflow-hidden">
+                                <!-- Toolbar -->
+                                <div class="px-6 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                                    <div class="flex items-center gap-4">
+                                        <label class="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
+                                            <input type="checkbox" class="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500" 
+                                                   :checked="selectedFixes.length === fixSuggestions.length && fixSuggestions.length > 0"
+                                                   @change="toggleAllFixes">
+                                            전체 선택 (<span x-text="selectedFixes.length"></span>)
+                                        </label>
+                                        <div class="h-4 w-px bg-slate-300"></div>
+                                        <div class="flex gap-2">
+                                            <button @click="filterConfidence(0.9)" class="text-xs px-2 py-1 rounded bg-white border border-slate-200 hover:border-indigo-300 hover:text-indigo-600 transition-colors">
+                                                신뢰도 90% 이상만
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="text-xs text-slate-500">
+                                        총 <span class="font-bold text-slate-800" x-text="fixSuggestions.length"></span>건의 제안
+                                    </div>
+                                </div>
+
+                                <!-- Table -->
+                                <div class="flex-1 overflow-y-auto">
+                                    <table class="w-full text-sm text-left">
+                                        <thead class="bg-white text-slate-500 font-medium sticky top-0 z-10 shadow-sm">
+                                            <tr>
+                                                <th class="px-6 py-3 w-12"></th>
+                                                <th class="px-6 py-3">위치</th>
+                                                <th class="px-6 py-3">현재 값 (오류)</th>
+                                                <th class="px-6 py-3">
+                                                    <div class="flex items-center gap-1">
+                                                        수정 제안
+                                                        <i class="ph-fill ph-arrow-right text-indigo-500"></i>
+                                                    </div>
+                                                </th>
+                                                <th class="px-6 py-3">근거 / 신뢰도</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="divide-y divide-slate-100 bg-white">
+                                            <template x-for="(fix, index) in fixSuggestions" :key="index">
+                                                <tr class="hover:bg-indigo-50/30 transition-colors" :class="{'bg-indigo-50/50': selectedFixes.includes(index)}">
+                                                    <td class="px-6 py-4">
+                                                        <input type="checkbox" :value="index" x-model="selectedFixes" class="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer">
+                                                    </td>
+                                                    <td class="px-6 py-4">
+                                                        <div class="font-medium text-slate-900" x-text="fix.sheet_name"></div>
+                                                        <div class="text-xs text-slate-500 font-mono" x-text="fix.column + ' (Row ' + fix.row + ')'"></div>
+                                                    </td>
+                                                    <td class="px-6 py-4">
+                                                        <span class="px-2 py-1 bg-red-50 text-red-600 rounded text-xs font-mono line-through decoration-red-300" x-text="fix.original_value"></span>
+                                                    </td>
+                                                    <td class="px-6 py-4">
+                                                        <input type="text" x-model="fix.fixed_value" 
+                                                               class="w-full px-2 py-1 text-sm border-b-2 border-slate-200 focus:border-indigo-500 focus:outline-none bg-transparent font-medium text-indigo-700 font-mono">
+                                                    </td>
+                                                    <td class="px-6 py-4">
+                                                        <div class="space-y-1">
+                                                            <div class="text-xs text-slate-600" x-text="fix.reason"></div>
+                                                            <div class="flex items-center gap-2">
+                                                                <div class="h-1.5 w-16 bg-slate-100 rounded-full overflow-hidden">
+                                                                    <div class="h-full rounded-full" 
+                                                                         :class="getConfidenceColor(fix.confidence_score)"
+                                                                         :style="'width: ' + (fix.confidence_score * 100) + '%'"></div>
+                                                                </div>
+                                                                <span class="text-[10px] font-bold" x-text="Math.round(fix.confidence_score * 100) + '%'"></span>
+                                                            </div>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            </template>
+                                            <tr x-show="fixSuggestions.length === 0">
+                                                <td colspan="5" class="px-6 py-12 text-center text-slate-500">
+                                                    수정 가능한 항목이 없습니다.
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Footer -->
+                        <div class="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-between items-center">
+                            <span class="text-sm text-slate-500">
+                                <i class="ph-fill ph-check-circle text-indigo-500"></i>
+                                <span class="font-bold text-slate-800" x-text="selectedFixes.length"></span>건 선택됨
+                            </span>
+                            <div class="flex gap-3">
+                                <button @click="fixModalOpen = false" class="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">취소</button>
+                                <button @click="applySmartFixes" 
+                                        class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-bold shadow-md shadow-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                                        :disabled="selectedFixes.length === 0">
+                                    <i class="ph-bold ph-download-simple"></i>
+                                    적용하여 다운로드
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
 
                 <!-- Rule File Details Modal -->
                 <div x-show="ruleFileDetails" x-cloak class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" @click.self="closeRuleFileDetails">
@@ -946,6 +1395,7 @@
 
                 // Results State
                 results: null,
+                dbErrors: null, // DB에서 가져온 에러들 (ID 포함)
                 searchQuery: '',
                 filterSheet: 'all',
                 currentPage: 1,
@@ -969,10 +1419,28 @@
                 ruleFileUploadedBy: 'system',
                 ruleFileNotes: '',
 
+                // Settings State
+                settingsModalOpen: false,
+                aiProvider: 'openai', // Default
+
                 // Rule Editor State
                 editingRule: null,
                 editingRuleParamsJson: '{}',
                 paramsValid: true,
+
+                // Smart Fix State
+                fixModalOpen: false,
+                isFixLoading: false,
+                fixSuggestions: [],
+                selectedFixes: [],
+
+                // Bulk Fix State (오류 항목 일괄 수정)
+                fixActiveTab: 'before',  // 'before' | 'after'
+                fixFilterSheet: 'all',
+                fixPreviewFilter: 'all',
+                selectedFixItems: [],  // [key, key, ...] - 'sheet::column' 형태
+                isDownloading: false,
+                fixPreview: { total: 0, success: 0, fail: 0, successRate: 0, items: [] },
 
                 // Navigation Items
                 navItems: [
@@ -1082,10 +1550,331 @@
                     return this.results.metadata.sheets_summary[this.selectedSheet];
                 },
 
+                // Bulk Fix: 시트+컬럼 조합별 오류 집계
+                getErrorsBySheetAndColumn() {
+                    if (!this.results || !this.results.errors) return [];
+
+                    // 시트+컬럼 조합으로 그룹화
+                    const groupMap = {};
+
+                    for (const error of this.results.errors) {
+                        const sheet = error.sheet || '기본';
+                        const col = error.column;
+                        const key = `${sheet}::${col}`;  // 고유 키
+
+                        if (!groupMap[key]) {
+                            groupMap[key] = {
+                                key: key,
+                                sheet: sheet,
+                                column: col,
+                                count: 0,
+                                sampleValues: [],
+                                ruleTypes: new Set(),
+                                messages: new Set(),
+                                expectedFormats: new Set()
+                            };
+                        }
+
+                        groupMap[key].count++;
+
+                        // 샘플 값 수집 (최대 5개)
+                        if (groupMap[key].sampleValues.length < 5 && error.actual_value !== null && error.actual_value !== undefined) {
+                            const val = String(error.actual_value);
+                            if (!groupMap[key].sampleValues.includes(val)) {
+                                groupMap[key].sampleValues.push(val);
+                            }
+                        }
+
+                        // 규칙 타입 및 메시지 수집
+                        if (error.rule_id) groupMap[key].ruleTypes.add(error.rule_id);
+                        if (error.message) groupMap[key].messages.add(error.message);
+                        if (error.expected) groupMap[key].expectedFormats.add(error.expected);
+                    }
+
+                    // 자동 수정 가능 여부 및 설명 결정
+                    const result = Object.values(groupMap).map(item => {
+                        const { autoFixable, fixDescription, fixType } = this.determineAutoFixability(item);
+                        return {
+                            ...item,
+                            autoFixable,
+                            fixDescription,
+                            fixType,
+                            ruleTypes: Array.from(item.ruleTypes),
+                            messages: Array.from(item.messages),
+                            expectedFormats: Array.from(item.expectedFormats)
+                        };
+                    });
+
+                    // 시트명 → 건수 순으로 정렬
+                    return result.sort((a, b) => {
+                        if (a.sheet !== b.sheet) return a.sheet.localeCompare(b.sheet);
+                        return b.count - a.count;
+                    });
+                },
+
+                // 자동 수정 가능 여부 판단
+                determineAutoFixability(columnError) {
+                    const messages = Array.from(columnError.messages).join(' ').toLowerCase();
+                    const expected = Array.from(columnError.expectedFormats).join(' ');
+                    const samples = columnError.sampleValues;
+
+                    // 날짜 형식 변환 (YYYY-MM-DD → YYYYMMDD)
+                    if (messages.includes('날짜') || messages.includes('date') || messages.includes('yyyymmdd')) {
+                        const hasDatePattern = samples.some(s => /^\d{4}[-\/\.]\d{2}[-\/\.]\d{2}$/.test(s));
+                        if (hasDatePattern) {
+                            return { autoFixable: true, fixDescription: '날짜 형식 변환 (YYYY-MM-DD → YYYYMMDD)', fixType: 'date_format' };
+                        }
+                    }
+
+                    // 성별 코드 변환 (남→1, 여→2)
+                    if (messages.includes('성별') || messages.includes('허용값') || columnError.column.includes('성별')) {
+                        const hasGenderText = samples.some(s => ['남', '여', '남자', '여자', 'M', 'F', 'male', 'female'].includes(String(s).toLowerCase()));
+                        if (hasGenderText) {
+                            return { autoFixable: true, fixDescription: '성별 코드 변환 (남→1, 여→2)', fixType: 'gender_code' };
+                        }
+                    }
+
+                    // 숫자 형식 변환 (콤마 제거, 문자 제거)
+                    if (messages.includes('숫자') || messages.includes('금액') || messages.includes('number')) {
+                        const hasCommaNumber = samples.some(s => /^[\d,]+$/.test(String(s).replace(/\s/g, '')));
+                        if (hasCommaNumber) {
+                            return { autoFixable: true, fixDescription: '숫자 형식 변환 (콤마/공백 제거)', fixType: 'number_format' };
+                        }
+                    }
+
+                    // 공백 제거
+                    if (messages.includes('공백') || messages.includes('whitespace')) {
+                        return { autoFixable: true, fixDescription: '앞뒤 공백 제거', fixType: 'trim' };
+                    }
+
+                    // 중복, 필수값 누락 등은 자동 수정 불가
+                    if (messages.includes('중복') || messages.includes('duplicate')) {
+                        return { autoFixable: false, fixDescription: '중복 오류 (수동 확인 필요)', fixType: 'duplicate' };
+                    }
+
+                    if (messages.includes('필수') || messages.includes('required') || messages.includes('비어')) {
+                        return { autoFixable: false, fixDescription: '필수값 누락 (수동 입력 필요)', fixType: 'required' };
+                    }
+
+                    return { autoFixable: false, fixDescription: '자동 수정 불가', fixType: 'unknown' };
+                },
+
+                // 선택된 항목의 총 수정 건수
+                getSelectedFixCount() {
+                    const errorGroups = this.getErrorsBySheetAndColumn();
+                    return this.selectedFixItems.reduce((sum, key) => {
+                        const group = errorGroups.find(e => e.key === key);
+                        return sum + (group ? group.count : 0);
+                    }, 0);
+                },
+
+                // 시트+컬럼 키가 선택되었는지 확인
+                isFixItemSelected(key) {
+                    return this.selectedFixItems.includes(key);
+                },
+
+                // 시트+컬럼 선택 토글
+                toggleFixItem(key, autoFixable) {
+                    if (!autoFixable) return;
+                    const idx = this.selectedFixItems.indexOf(key);
+                    if (idx === -1) {
+                        this.selectedFixItems.push(key);
+                    } else {
+                        this.selectedFixItems.splice(idx, 1);
+                    }
+                },
+
+                // 고유 시트 목록 가져오기
+                getUniqueSheets() {
+                    const groups = this.getErrorsBySheetAndColumn();
+                    return [...new Set(groups.map(g => g.sheet))].sort();
+                },
+
+                // 시트 필터링된 오류 목록
+                getFilteredErrorsBySheetAndColumn() {
+                    const groups = this.getErrorsBySheetAndColumn();
+                    if (this.fixFilterSheet === 'all') return groups;
+                    return groups.filter(g => g.sheet === this.fixFilterSheet);
+                },
+
+                // 자동 수정 가능한 항목 전체 선택
+                selectAllFixableItems() {
+                    const groups = this.getFilteredErrorsBySheetAndColumn();
+                    const fixableKeys = groups.filter(g => g.autoFixable).map(g => g.key);
+                    // 기존 선택에 추가 (중복 제거)
+                    this.selectedFixItems = [...new Set([...this.selectedFixItems, ...fixableKeys])];
+                },
+
+                // 미리보기 생성 (프론트엔드에서 시뮬레이션)
+                generateFixPreview() {
+                    if (this.selectedFixItems.length === 0) {
+                        this.fixPreview = { total: 0, success: 0, fail: 0, successRate: 0, items: [] };
+                        return;
+                    }
+
+                    const errorGroups = this.getErrorsBySheetAndColumn();
+                    const selectedGroups = this.selectedFixItems.map(key => errorGroups.find(e => e.key === key)).filter(Boolean);
+
+                    const previewItems = [];
+                    let successCount = 0;
+                    let failCount = 0;
+
+                    // 선택된 오류들에 대해 미리보기 생성
+                    for (const error of this.results.errors) {
+                        const key = `${error.sheet || '기본'}::${error.column}`;
+                        if (!this.selectedFixItems.includes(key)) continue;
+
+                        const group = selectedGroups.find(g => g.key === key);
+                        const fixType = group?.fixType || 'unknown';
+                        const beforeValue = error.actual_value;
+                        const afterValue = this.simulateFixValue(beforeValue, fixType);
+                        const success = afterValue !== null && afterValue !== beforeValue;
+
+                        previewItems.push({
+                            sheet: error.sheet || '기본',
+                            column: error.column,
+                            row: error.row,
+                            before: String(beforeValue ?? ''),
+                            after: String(afterValue ?? beforeValue ?? ''),
+                            success: success,
+                            fixType: fixType
+                        });
+
+                        if (success) successCount++;
+                        else failCount++;
+                    }
+
+                    const total = previewItems.length;
+                    this.fixPreview = {
+                        total: total,
+                        success: successCount,
+                        fail: failCount,
+                        successRate: total > 0 ? Math.round((successCount / total) * 100) : 0,
+                        items: previewItems
+                    };
+                },
+
+                // 값 변환 시뮬레이션 (프론트엔드)
+                simulateFixValue(value, fixType) {
+                    if (value === null || value === undefined) return null;
+                    const strValue = String(value).trim();
+
+                    if (fixType === 'date_format') {
+                        // YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD → YYYYMMDD
+                        const match = strValue.match(/^(\d{4})[-\/.](\d{2})[-\/.](\d{2})$/);
+                        if (match) return `${match[1]}${match[2]}${match[3]}`;
+                        return null;
+                    }
+
+                    if (fixType === 'gender_code') {
+                        const genderMap = {
+                            '남': '1', '남자': '1', 'm': '1', 'male': '1', 'M': '1',
+                            '여': '2', '여자': '2', 'f': '2', 'female': '2', 'F': '2'
+                        };
+                        return genderMap[strValue] || null;
+                    }
+
+                    if (fixType === 'number_format') {
+                        const cleaned = strValue.replace(/[,\s]/g, '');
+                        if (/^\d+$/.test(cleaned)) return cleaned;
+                        return null;
+                    }
+
+                    if (fixType === 'trim') {
+                        return strValue;
+                    }
+
+                    return null;
+                },
+
+                // 필터링된 미리보기 항목
+                getFilteredPreviewItems() {
+                    if (!this.fixPreview.items) return [];
+                    if (this.fixPreviewFilter === 'all') return this.fixPreview.items;
+                    if (this.fixPreviewFilter === 'success') return this.fixPreview.items.filter(i => i.success);
+                    if (this.fixPreviewFilter === 'fail') return this.fixPreview.items.filter(i => !i.success);
+                    return this.fixPreview.items;
+                },
+
+                // 수정된 파일 다운로드
+                async downloadFixedFile() {
+                    if (this.selectedFixItems.length === 0) return;
+                    if (!this.fileA) {
+                        this.showToast('원본 파일이 필요합니다. 파일을 다시 업로드해주세요.', 'error');
+                        return;
+                    }
+
+                    this.isDownloading = true;
+
+                    try {
+                        // 선택된 시트+컬럼 조합의 수정 정보 수집
+                        const errorGroups = this.getErrorsBySheetAndColumn();
+                        const selectedGroups = this.selectedFixItems.map(key => {
+                            return errorGroups.find(e => e.key === key);
+                        }).filter(Boolean);
+
+                        // 오류 데이터에서 수정할 셀 정보 추출 (선택된 시트+컬럼만)
+                        const cellsToFix = this.results.errors
+                            .filter(e => {
+                                const key = `${e.sheet || '기본'}::${e.column}`;
+                                return this.selectedFixItems.includes(key);
+                            })
+                            .map(e => {
+                                const key = `${e.sheet || '기본'}::${e.column}`;
+                                const group = selectedGroups.find(g => g.key === key);
+                                return {
+                                    sheet: e.sheet,
+                                    row: e.row,
+                                    column: e.column,
+                                    currentValue: e.actual_value,
+                                    fixType: group?.fixType || 'unknown'
+                                };
+                            });
+
+                        // FormData로 파일과 함께 전송
+                        const formData = new FormData();
+                        formData.append('original_file', this.fileA);
+                        formData.append('cells_to_fix_json', JSON.stringify(cellsToFix));
+
+                        const response = await fetch('http://localhost:8000/api/fix/download', {
+                            method: 'POST',
+                            body: formData
+                        });
+
+                        if (!response.ok) {
+                            const errorData = await response.json().catch(() => ({}));
+                            throw new Error(errorData.detail?.message || '파일 생성 실패');
+                        }
+
+                        // Blob으로 파일 다운로드
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `수정완료_${this.fileA?.name || 'data'}_${new Date().toISOString().slice(0,10)}.xlsx`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+
+                        this.showToast(`${this.selectedFixItems.length}개 항목, ${this.getSelectedFixCount()}건 수정 완료`, 'success');
+                        this.selectedFixItems = [];
+
+                    } catch (error) {
+                        console.error('Download error:', error);
+                        this.showToast('파일 다운로드 실패: ' + error.message, 'error');
+                    } finally {
+                        this.isDownloading = false;
+                    }
+                },
+
                 handleFileSelect(event, type) {
                     const file = event.target.files[0];
                     if (file) {
-                        if (type === 'A') this.fileA = file;
+                        if (type === 'A') {
+                            this.fileA = file;
+                            this.autoStartValidation();
+                        }
                         if (type === 'B') this.fileB = file;
                     }
                 },
@@ -1094,8 +1883,18 @@
                     this[type === 'A' ? 'dragOverA' : 'dragOverB'] = false;
                     const file = event.dataTransfer.files[0];
                     if (file) {
-                        if (type === 'A') this.fileA = file;
+                        if (type === 'A') {
+                            this.fileA = file;
+                            this.autoStartValidation();
+                        }
                         if (type === 'B') this.fileB = file;
+                    }
+                },
+
+                autoStartValidation() {
+                    // 규칙이 선택되어 있으면 자동으로 검증 시작
+                    if (this.selectedSavedRuleId && !this.isLoading) {
+                        setTimeout(() => this.validateFiles(), 100);
                     }
                 },
 
@@ -1137,19 +1936,25 @@
                             const sessionId = data.session_id;
                             const sessionRes = await fetch(`http://localhost:8000/sessions/${sessionId}`);
                             const sessionData = await sessionRes.json();
-                            
+
                             // Check where full_results is located
                             // validation_service.py stores it in the 'full_results' column of the session table
                             const fullResults = sessionData.session.full_results;
 
                             if (fullResults) {
+                                // Store DB errors separately for AI fix suggestions
+                                this.dbErrors = sessionData.errors || [];
+
                                 // If full_results (JSON) is preserved, use it directly
                                 this.results = {
                                     summary: fullResults.summary,
                                     errors: fullResults.errors,
                                     error_groups: fullResults.error_groups,
                                     rules_applied: fullResults.rules_applied,
-                                    metadata: fullResults.metadata || sessionData.session.metadata || {}
+                                    metadata: {
+                                        ...(fullResults.metadata || {}),
+                                        session_id: sessionId  // CRITICAL: Add session_id
+                                    }
                                 };
                             } else {
                                 // Fallback: If full_results is missing, use errors from DB join
@@ -1174,11 +1979,13 @@
                                         expected: e.expected_value,
                                         source_rule: e.source_rule_text,
                                         id: e.id, // Keep DB ID for feedback
-                                        session_id: e.session_id
+                                        session_id: sessionId
                                     })),
                                     error_groups: [], // TODO: Re-group if needed
-                                    rules_applied: [], 
-                                    metadata: {}
+                                    rules_applied: [],
+                                    metadata: {
+                                        session_id: sessionId  // CRITICAL: Add session_id
+                                    }
                                 };
                             }
                             
@@ -1397,8 +2204,10 @@
                     }
 
                     const sheets = this.results.metadata.sheets_summary;
-                    // Ensure labels are strings and handle potential encoding issues if any
-                    const labels = Object.keys(sheets).map(name => String(name));
+                    // Use sheet_order if available for consistent ordering
+                    const labels = (this.results.metadata.sheet_order && this.results.metadata.sheet_order.length > 0)
+                        ? this.results.metadata.sheet_order.filter(name => sheets[name]) // Ensure sheet exists in summary
+                        : Object.keys(sheets).map(name => String(name));
                     
                     const errorData = labels.map(l => sheets[l].error_rows || 0);
                     const validData = labels.map(l => sheets[l].valid_rows || 0);
@@ -1555,8 +2364,14 @@
                         this.ruleFileNotes = '';
                         document.getElementById('ruleFileInput').value = '';
 
-                        // Reload rule files list
+                        // Reload rule files list and auto-select the newly uploaded file
                         await this.loadRuleFiles();
+
+                        // Auto-select the newly uploaded file
+                        if (result.id) {
+                            this.selectedSavedRuleId = result.id;
+                            console.log(`Auto-selected newly uploaded rule file: ${result.id}`);
+                        }
                     } catch (e) {
                         console.error('Upload error:', e);
                         alert(`업로드 실패: ${e.message}`);
@@ -1635,6 +2450,46 @@
                     }
                 },
 
+                async reinterpretRules(fileId) {
+                    // 재해석 확인 다이얼로그
+                    const confirmed = confirm(
+                        '규칙을 재해석하시겠습니까?\n\n' +
+                        '• 기존 AI 해석 결과가 모두 초기화됩니다\n' +
+                        '• 로컬 파서로 재해석하여 AI 오류를 방지합니다\n' +
+                        '• 저장된 원본 파일을 사용합니다'
+                    );
+
+                    if (!confirmed) return;
+
+                    try {
+                        this.showToast('규칙 재해석 중...', 'info');
+
+                        const response = await fetch(
+                            `http://localhost:8000/rules/reinterpret/${fileId}?use_local_parser=true`,
+                            { method: 'POST' }
+                        );
+
+                        if (!response.ok) {
+                            const error = await response.json();
+                            throw new Error(error.detail?.message || '재해석 실패');
+                        }
+
+                        const result = await response.json();
+
+                        this.showToast(
+                            `재해석 완료: ${result.interpreted_rules}/${result.total_rules}개 규칙 (${result.engine_used} 엔진)`,
+                            'success'
+                        );
+
+                        // 목록 새로고침
+                        await this.loadRuleFiles();
+
+                    } catch (e) {
+                        console.error('Re-interpretation error:', e);
+                        alert(`재해석 실패: ${e.message}`);
+                    }
+                },
+
                 // =================================================================
                 // Rule Editor Logic
                 // =================================================================
@@ -1702,22 +2557,167 @@
 
                 async deleteRule(ruleId) {
                     if (!confirm('이 규칙을 정말로 삭제하시겠습니까?')) return;
-                    
+
                     try {
                         const response = await fetch(`http://localhost:8000/rules/${ruleId}?permanent=true`, {
                             method: 'DELETE'
                         });
 
                         if (!response.ok) throw new Error('삭제 실패');
-                        
+
                         this.showToast('규칙이 삭제되었습니다.', 'success');
                         this.editingRule = null;
-                        
+
                         // Refresh details
                         if (this.selectedRuleFile) {
                             this.viewRuleFileDetails(this.selectedRuleFile);
                         }
                     } catch (e) {
+                        alert('오류: ' + e.message);
+                    }
+                },
+
+                // =================================================================
+                // Smart Fix Functions
+                // =================================================================
+
+                async openSmartFixModal() {
+                    if (!this.results || !this.results.errors || this.results.errors.length === 0) {
+                        alert('수정할 오류가 없습니다.');
+                        return;
+                    }
+
+                    this.fixModalOpen = true;
+                    this.isFixLoading = true;
+                    this.fixSuggestions = [];
+                    this.selectedFixes = [];
+
+                    try {
+                        // Get session_id from results metadata if available
+                        const sessionId = this.results.metadata?.session_id;
+
+                        if (!sessionId) {
+                            // Legacy validation without session - show placeholder message
+                            this.isFixLoading = false;
+                            alert('AI 수정 제안은 DB 규칙으로 검증한 결과에서만 사용할 수 있습니다.\n\n상단의 "규칙 관리" 탭에서 규칙을 DB에 업로드한 후, "파일 업로드" 탭에서 "저장된 규칙 사용"을 선택하여 검증해주세요.');
+                            this.fixModalOpen = false;
+                            return;
+                        }
+
+                        // Get error IDs from DB errors (which have actual IDs)
+                        let errorIds = [];
+                        if (this.dbErrors && this.dbErrors.length > 0) {
+                            errorIds = this.dbErrors.map(e => e.id);
+                        }
+
+                        if (errorIds.length === 0) {
+                            this.isFixLoading = false;
+                            alert('수정 가능한 오류가 없습니다. (DB 에러 ID를 찾을 수 없음)');
+                            return;
+                        }
+
+                        console.log(`[AI Fix] Found ${errorIds.length} errors with IDs from DB`);
+
+                        // Call AI fix suggestion API
+                        const response = await fetch('http://localhost:8000/fix/suggest', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                session_id: sessionId,
+                                error_ids: errorIds.slice(0, 50) // Limit to 50 for performance
+                            })
+                        });
+
+                        if (!response.ok) {
+                            const errorData = await response.json();
+                            throw new Error(errorData.detail?.message || '수정 제안 생성 실패');
+                        }
+
+                        this.fixSuggestions = await response.json();
+                        this.isFixLoading = false;
+
+                        if (this.fixSuggestions.length === 0) {
+                            alert('AI가 수정 제안을 생성할 수 없었습니다.\n\n참고: 중복 오류나 논리 오류는 자동 수정이 불가능합니다.\n수동으로 데이터를 확인해주세요.');
+                        }
+                    } catch (e) {
+                        console.error('Fix suggestion error:', e);
+                        this.isFixLoading = false;
+                        alert('오류: ' + e.message);
+                    }
+                },
+
+                toggleAllFixes(event) {
+                    if (event.target.checked) {
+                        this.selectedFixes = this.fixSuggestions.map((_, index) => index);
+                    } else {
+                        this.selectedFixes = [];
+                    }
+                },
+
+                filterConfidence(minConfidence) {
+                    this.selectedFixes = this.fixSuggestions
+                        .map((fix, index) => ({ fix, index }))
+                        .filter(({ fix }) => fix.confidence >= minConfidence)
+                        .map(({ index }) => index);
+                },
+
+                getConfidenceColor(score) {
+                    if (score >= 0.9) return 'bg-green-100 text-green-800';
+                    if (score >= 0.7) return 'bg-yellow-100 text-yellow-800';
+                    return 'bg-red-100 text-red-800';
+                },
+
+                async applySelectedFixes() {
+                    if (this.selectedFixes.length === 0) {
+                        alert('적용할 수정 사항을 선택해주세요.');
+                        return;
+                    }
+
+                    if (!confirm(`${this.selectedFixes.length}건의 수정 사항을 적용하시겠습니까?`)) {
+                        return;
+                    }
+
+                    try {
+                        // Get selected fix suggestions
+                        const fixes = this.selectedFixes.map(index => this.fixSuggestions[index]);
+
+                        // Prepare form data
+                        const formData = new FormData();
+                        formData.append('fix_request_json', JSON.stringify({ fixes }));
+
+                        // Get original file (need to ask user to upload again)
+                        const fileInput = document.getElementById('fileInputA');
+                        if (!fileInput || !fileInput.files || !fileInput.files[0]) {
+                            alert('원본 파일을 찾을 수 없습니다. 파일을 다시 업로드해주세요.');
+                            return;
+                        }
+                        formData.append('original_file', fileInput.files[0]);
+
+                        // Apply fixes
+                        const response = await fetch('http://localhost:8000/fix/apply', {
+                            method: 'POST',
+                            body: formData
+                        });
+
+                        if (!response.ok) {
+                            throw new Error('수정 적용 실패');
+                        }
+
+                        // Download fixed file
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `Fixed_${new Date().toISOString().slice(0,10)}.xlsx`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+
+                        this.showToast('수정된 파일이 다운로드되었습니다.', 'success');
+                        this.fixModalOpen = false;
+                    } catch (e) {
+                        console.error('Apply fixes error:', e);
                         alert('오류: ' + e.message);
                     }
                 }

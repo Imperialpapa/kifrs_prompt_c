@@ -159,7 +159,15 @@ class RuleService:
 
                 raise Exception(f"Failed to insert rules to database: {str(insert_error)}")
 
-            # Step 6: Retrieve and return file metadata
+            # Step 6: Save original file for future re-interpretation
+            print("[RuleService] Saving original file content...")
+            save_success = await self.repository.save_original_file(UUID(file_id), excel_content)
+            if save_success:
+                print("[RuleService] Original file saved successfully")
+            else:
+                print("[RuleService] Warning: Failed to save original file (non-critical)")
+
+            # Step 7: Retrieve and return file metadata
             file_record = await self.repository.get_rule_file(UUID(file_id))
 
             response = RuleFileResponse(
@@ -175,15 +183,18 @@ class RuleService:
 
             print(f"[RuleService] Upload completed successfully")
 
-            # Step 7: Start AI interpretation in background
-            print(f"[RuleService] Starting AI interpretation...")
+            # Step 8: Start rule interpretation (use local parser by default to avoid AI errors)
+            print(f"[RuleService] Starting rule interpretation (local parser)...")
             try:
-                # Run AI interpretation (this will take 10-20 seconds)
-                ai_result = await self.ai_cache_service.interpret_and_cache_rules(file_id)
-                print(f"[RuleService] AI interpretation completed: {ai_result['interpreted_rules']}/{ai_result['total_rules']} rules")
+                # Use local parser by default to avoid AI interpretation errors
+                ai_result = await self.ai_cache_service.interpret_and_cache_rules(
+                    file_id,
+                    force_local=True  # 로컬 파서 사용 (AI 오류 방지)
+                )
+                print(f"[RuleService] Interpretation completed: {ai_result['interpreted_rules']}/{ai_result['total_rules']} rules (engine: {ai_result.get('engine', 'local')})")
             except Exception as ai_error:
-                print(f"[RuleService] AI interpretation failed (non-critical): {str(ai_error)}")
-                # Don't fail the upload if AI interpretation fails
+                print(f"[RuleService] Interpretation failed (non-critical): {str(ai_error)}")
+                # Don't fail the upload if interpretation fails
 
             return response
 
@@ -481,6 +492,101 @@ class RuleService:
         except Exception as e:
             print(f"[RuleService] Error exporting to Excel: {str(e)}")
             raise Exception(f"Failed to export rules to Excel: {str(e)}")
+
+    async def reinterpret_rules(
+        self,
+        file_id: str,
+        use_local_parser: bool = True
+    ) -> Dict[str, Any]:
+        """
+        저장된 원본 파일로 규칙 재해석
+
+        Args:
+            file_id: UUID string of the rule file
+            use_local_parser: True면 로컬 파서 사용 (AI 오류 방지)
+
+        Returns:
+            Dict: 재해석 결과 통계
+        """
+        print(f"[RuleService] Starting re-interpretation for file: {file_id}")
+
+        try:
+            # Step 1: 원본 파일 조회
+            original_content = await self.repository.get_original_file(UUID(file_id))
+
+            if not original_content:
+                raise Exception("원본 파일이 저장되어 있지 않습니다. 규칙 파일을 다시 업로드해주세요.")
+
+            print(f"[RuleService] Loaded original file ({len(original_content)} bytes)")
+
+            # Step 2: 원본 파일 파싱해서 자연어 규칙 추출
+            print("[RuleService] Parsing original file...")
+            natural_language_rules, sheet_row_counts, _, _ = parse_rules_from_excel(original_content)
+            print(f"[RuleService] Parsed {len(natural_language_rules)} rules from original file")
+
+            # Step 3: 로컬 파서로 규칙 해석
+            print(f"[RuleService] Interpreting rules with local parser...")
+            from ai_layer import AIRuleInterpreter
+            interpreter = AIRuleInterpreter()
+            validation_rules, conflicts = interpreter._local_rule_parser(natural_language_rules)
+            print(f"[RuleService] Generated {len(validation_rules)} validation rules")
+
+            # Step 4: 기존 규칙의 AI 해석 초기화
+            print("[RuleService] Clearing existing AI interpretations...")
+            cleared_count = await self.repository.clear_ai_interpretation(UUID(file_id))
+            print(f"[RuleService] Cleared {cleared_count} rules")
+
+            # Step 5: 새 해석 결과를 DB에 저장
+            print("[RuleService] Saving new interpretations to DB...")
+            db_rules = await self.repository.get_rules_by_file(UUID(file_id), active_only=True)
+
+            updated_count = 0
+            for db_rule in db_rules:
+                # 필드명과 시트로 매칭
+                field_name = db_rule.get('field_name')
+                sheet_name = db_rule.get('canonical_sheet_name')
+
+                # 매칭되는 해석 규칙 찾기
+                for val_rule in validation_rules:
+                    if val_rule.field_name == field_name and val_rule.source.sheet_name == sheet_name:
+                        # AI 해석 데이터 업데이트
+                        ai_data = {
+                            "ai_rule_id": val_rule.rule_id,
+                            "ai_rule_type": val_rule.rule_type,
+                            "ai_parameters": val_rule.parameters,
+                            "ai_error_message": val_rule.error_message_template,
+                            "ai_interpretation_summary": val_rule.ai_interpretation_summary,
+                            "ai_confidence_score": float(val_rule.confidence_score),
+                            "ai_interpreted_at": datetime.now().isoformat(),
+                            "ai_model_version": "local-parser"
+                        }
+                        success = await self.repository.update_rule_ai_interpretation(
+                            UUID(db_rule['id']),
+                            ai_data
+                        )
+                        if success:
+                            updated_count += 1
+                        break
+
+            # Step 6: 해석 상태 업데이트
+            engine = 'local'
+            status = 'completed' if updated_count > 0 else 'failed'
+            await self.repository.update_interpretation_status(UUID(file_id), status, engine)
+
+            print(f"[RuleService] Re-interpretation completed: {updated_count}/{len(db_rules)} rules updated")
+            return {
+                'total_rules': len(db_rules),
+                'interpreted_rules': updated_count,
+                'skipped_rules': len(db_rules) - updated_count,
+                'failed_rules': 0,
+                'engine_used': engine,
+                'original_file_available': True
+            }
+
+        except Exception as e:
+            print(f"[RuleService] Error during re-interpretation: {str(e)}")
+            await self.repository.update_interpretation_status(UUID(file_id), 'failed')
+            raise Exception(f"Failed to re-interpret rules: {str(e)}")
 
 
 # =============================================================================

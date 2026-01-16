@@ -416,7 +416,40 @@ class RuleEngine:
     ):
         """
         오류 추가
+        - 메시지에 {field_name} 플레이스홀더를 실제 필드명으로 치환
+        - 잘못된 필드명이 하드코딩된 경우 제거
         """
+        # 1. {field_name} 플레이스홀더 치환
+        if "{field_name}" in message:
+            message = message.replace("{field_name}", column)
+
+        # 2. 현재 필드명과 다른 필드명이 메시지에 포함된 경우 제거
+        # (예: "생년월일" 필드인데 "사원번호이(가)" 라는 텍스트가 있는 경우)
+        if column and column not in message:
+            # 일반적인 필드명 패턴 (한글, 영문, 숫자, _)을 찾아서 제거
+            # "XXX이(가)", "XXX은(는)", "XXX을(를)" 같은 패턴 감지
+            wrong_field_patterns = [
+                r'([가-힣a-zA-Z0-9_]+)이\(가\)',
+                r'([가-힣a-zA-Z0-9_]+)은\(는\)',
+                r'([가-힣a-zA-Z0-9_]+)을\(를\)',
+                r'([가-힣a-zA-Z0-9_]+)\s*값',
+                r'([가-힣a-zA-Z0-9_]+)\s*형식'
+            ]
+
+            for pattern in wrong_field_patterns:
+                match = re.search(pattern, message)
+                if match:
+                    found_field = match.group(1)
+                    # 발견된 필드명이 현재 컬럼명과 다르면 현재 컬럼명으로 교체
+                    if found_field != column:
+                        message = message.replace(found_field, column)
+                        break
+
+        # 3. 여전히 현재 필드명이 메시지에 없으면 앞에 추가
+        if column and column not in message:
+            if any(keyword in message for keyword in ["중복", "비어있습니다", "필수", "형식", "범위", "값", "올바르지"]):
+                message = f"{column}: {message}"
+
         error = ValidationError(
             row=row,
             column=column,
@@ -426,7 +459,7 @@ class RuleEngine:
             expected=expected,
             source_rule=rule.source.original_text
         )
-        
+
         self.errors.append(error)
         self.row_error_flags.add(row)
     

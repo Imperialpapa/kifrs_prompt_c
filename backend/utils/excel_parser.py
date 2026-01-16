@@ -129,6 +129,11 @@ def parse_rules_from_excel(content: bytes) -> Tuple[List[Dict[str, Any]], Dict[s
                 "condition": str(condition) if condition else "",
                 "note": str(note) if note else ""
             }
+
+            # CRITICAL DEBUG: Print first few rules to verify field-rule mapping
+            if len(natural_language_rules) < 10:
+                print(f"   [DEBUG] Rule #{len(natural_language_rules)+1}: field='{safe_field_name}' rule_text='{rule_text[:50]}'")
+
             natural_language_rules.append(rule_entry)
 
     return natural_language_rules, sheet_row_counts, total_raw_rows, reported_max_row

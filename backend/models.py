@@ -427,3 +427,36 @@ class AILearningStats(BaseModel):
     false_positive_rate: float
     most_problematic_rules: List[Dict[str, Any]] = Field(default_factory=list)
     improvement_suggestions: List[str] = Field(default_factory=list)
+
+
+# =============================================================================
+# Phase 5: Smart Fix Models
+# =============================================================================
+
+class FixSuggestion(BaseModel):
+    """AI 제안 수정안"""
+    error_id: Optional[str] = Field(None, description="오류 ID (DB에 있는 경우)")
+    sheet_name: str
+    row: int
+    column: str
+    original_value: Any
+    fixed_value: Any
+    confidence_score: float = Field(..., ge=0.0, le=1.0)
+    reason: str
+    is_auto_fixable: bool = Field(False, description="신뢰도가 높아 자동 적용 가능한지")
+
+class FixRequest(BaseModel):
+    """사용자가 승인한 단일 수정 요청"""
+    sheet_name: str
+    row: int
+    column: str
+    original_value: Any
+    fixed_value: Any
+    error_id: Optional[str] = None
+
+class BatchFixRequest(BaseModel):
+    """일괄 수정 요청 (파일 생성용)"""
+    session_id: str
+    fixes: List[FixRequest]
+    generate_file: bool = True  # True면 엑셀 파일 생성하여 반환
+

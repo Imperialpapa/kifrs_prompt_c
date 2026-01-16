@@ -9,16 +9,17 @@ Endpoints:
 - GET /health: 헬스체크
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import pandas as pd
 import io
 import os
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import traceback
 from datetime import datetime
+from pydantic import BaseModel
 
 from models import (
     ValidationResponse,
@@ -29,7 +30,9 @@ from models import (
     RuleFileResponse,
     RuleUpdate,
     RuleDetail,
-    FalsePositiveFeedback
+    FalsePositiveFeedback,
+    BatchFixRequest,
+    FixSuggestion
 )
 from ai_layer import AIRuleInterpreter
 from rule_engine import RuleEngine
@@ -38,6 +41,7 @@ from services.ai_cache_service import AICacheService
 from services.validation_service import ValidationService
 from services.feedback_service import FeedbackService
 from services.statistics_service import StatisticsService
+from services.fix_service import FixService
 from utils.excel_parser import parse_rules_from_excel, normalize_sheet_name, get_canonical_name
 from utils.common import group_errors
 
@@ -70,11 +74,29 @@ ai_cache_service = AICacheService()
 validation_service = ValidationService()
 feedback_service = FeedbackService()
 statistics_service = StatisticsService()
+fix_service = FixService()
 
 
 # =============================================================================
-# API Endpoints
-# =============================================================================
+# 헬퍼 함수
+
+def sanitize_sheet_name(name: str) -> str:
+    r"""
+    Excel 시트 이름 제약사항 준수 처리
+    1. 최대 31자
+    2. 특수문자 제거 (: \ / ? * [ ])
+    """
+    if not name:
+        return "Sheet1"
+    
+    # 특수문자 제거
+    invalid_chars = [':', '\\', '/', '?', '*', '[', ']']
+    clean_name = name
+    for char in invalid_chars:
+        clean_name = clean_name.replace(char, '_')
+    
+    # 길이 제한 (31자)
+    return clean_name[:31]
 
 @app.get("/")
 async def root():
@@ -152,39 +174,23 @@ async def get_version():
 @app.post("/validate", response_model=ValidationResponse)
 async def validate_data(
     employee_file: UploadFile = File(..., description="직원 데이터 파일 (Excel A)"),
-    rules_file: UploadFile = File(..., description="검증 규칙 파일 (Excel B)")
+    rules_file: UploadFile = File(..., description="검증 규칙 파일 (Excel B)"),
+    ai_provider: str = Form("openai", description="AI Provider (openai, anthropic, gemini)")
 ):
     """
     데이터 검증 실행
-    
-    Process:
-    1. Excel A (직원 데이터) 읽기
-    2. Excel B (자연어 규칙) 읽기
-    3. AI에게 규칙 해석 요청
-    4. 결정론적 엔진으로 검증 실행
-    5. 결과 반환
     """
     try:
-        # =====================================================================
-        # Step 1: Excel A 읽기 (직원 데이터) - 다중 시트 지원
-        # =====================================================================
+        # Step 1: Excel A 읽기 (직원 데이터)
         print("[Step 1] Reading employee data...")
         employee_content = await employee_file.read()
-
-        # 모든 시트 읽기
         excel_file = pd.ExcelFile(io.BytesIO(employee_content))
         
-        # 통합 데이터 맵: Canonical Name -> { display_name, original_name, df }
-        # 이것이 시트 데이터 조회 및 매칭의 Single Source of Truth가 됩니다.
         sheet_data_map = {}
-        sheet_mapping_info = {} # Debug info for logging
-
-        print(f"   [INFO] Raw sheet names in file: {excel_file.sheet_names}")
+        sheet_mapping_info = {}
 
         for sheet_name in excel_file.sheet_names:
             df = pd.read_excel(io.BytesIO(employee_content), sheet_name=sheet_name)
-            
-            # 이름 변환
             norm_name = normalize_sheet_name(sheet_name)
             canonical_name = get_canonical_name(sheet_name)
             
@@ -194,64 +200,35 @@ async def validate_data(
                 "df": df
             }
             sheet_mapping_info[canonical_name] = sheet_name
-            
-            print(f"   [OK] Loaded sheet '{sheet_name}' -> canonical '{canonical_name}': {len(df)} rows")
 
-        print(f"[OK] Loaded {len(sheet_data_map)} sheets from employee file")
-        
-        # =====================================================================
         # Step 2: Excel B 읽기 (자연어 규칙)
-        # =====================================================================
-        print("\n[Step 2] Reading validation rules...")
+        print("[Step 2] Reading validation rules...")
         rules_content = await rules_file.read()
-
-        # 헬퍼 함수를 사용하여 규칙 파싱 (로직 통합)
         natural_language_rules, sheet_row_counts, total_raw_rows, reported_max_row = parse_rules_from_excel(rules_content)
 
-        # 디버깅: 시트별 규칙 개수 출력
-        from collections import Counter
-        sheet_counts = Counter(r['display_sheet_name'] for r in natural_language_rules)
-        print(f"[OK] Loaded {len(natural_language_rules)} validation rules from {len(sheet_counts)} sheets:")
-        for sheet, count in sheet_counts.items():
-            print(f"   - '{sheet}': {count} rules")
-
-        # [수정] 매칭 통계 계산을 위한 리스트 미리 정의 (Step 5에서 사용)
-        # 필터링 전의 전체 시트 목록(sheet_row_counts)을 기준으로 합니다.
         all_rule_sheets_display_unfiltered = sorted(list(sheet_row_counts.keys()))
         all_rule_sheets_canonical_unfiltered = [get_canonical_name(name) for name in all_rule_sheets_display_unfiltered]
 
-        # =====================================================================
         # Step 3: AI 규칙 해석
-        # =====================================================================
-        print("\n[Step 3] AI interpreting rules...")
+        print(f"[Step 3] AI interpreting rules using {ai_provider}...")
         ai_response: AIInterpretationResponse = await ai_interpreter.interpret_rules(
-            natural_language_rules
+            natural_language_rules,
+            provider=ai_provider
         )
 
-        print(f"[OK] AI interpreted {len(ai_response.rules)} rules")
-        print(f"[WARN] Detected {len(ai_response.conflicts)} conflicts")
-
-        # =====================================================================
-        # Step 4: 결정론적 검증 실행 - 시트별 처리 (통합 매칭 로직 적용)
-        # =====================================================================
-        print("\n[Step 4] Running deterministic validation...")
+        # Step 4: 결정론적 검증 실행
+        print("[Step 4] Running deterministic validation...")
         validation_res = await validation_service.validate_sheets(sheet_data_map, ai_response.rules)
 
-        # =====================================================================
         # Step 5: 응답 생성 및 메타데이터 추가
-        # =====================================================================
-        # AI 규칙 개수 집계 (시트별 - Canonical Name 기준)
         from collections import Counter
         rule_counts_by_canonical = Counter(rule.source.sheet_name for rule in ai_response.rules)
 
-        # 매칭 연산
         data_sheets_set = set(sheet_data_map.keys())
         rule_sheets_set = set(all_rule_sheets_canonical_unfiltered)
         
         matched_sheets_set = data_sheets_set.intersection(rule_sheets_set)
         unmatched_sheets_set = rule_sheets_set - data_sheets_set
-        
-        matched_sheets_count = len(matched_sheets_set)
         
         # 매칭 안 된 시트들의 Display Name 찾기
         unmatched_sheet_names = []
@@ -261,7 +238,6 @@ async def validate_data(
 
         all_data_sheets = sorted(list(sheet_mapping_info.values()))
 
-        # 드롭다운 표시용 문자열 생성: "시트명 (N행 / M규칙)"
         display_list = []
         for d_name in all_rule_sheets_display_unfiltered:
             c_name = get_canonical_name(d_name)
@@ -271,7 +247,7 @@ async def validate_data(
 
         matching_stats = {
             "total_rule_sheets": len(all_rule_sheets_canonical_unfiltered),
-            "matched_sheets": matched_sheets_count,
+            "matched_sheets": len(matched_sheets_set),
             "unmatched_sheet_names": unmatched_sheet_names,
             "all_rule_sheets": display_list,
             "all_data_sheets": all_data_sheets,
@@ -280,18 +256,22 @@ async def validate_data(
             "total_rules_count": len(ai_response.rules)
         }
 
-        # 최종 응답 객체 완성
         validation_res.conflicts = ai_response.conflicts
+
+        # 실제 사용된 엔진 확인
+        actual_model = "local-parser" if not ai_interpreter.use_cloud_ai else f"cloud-{ai_provider}"
+
         validation_res.metadata.update({
             "employee_file_name": employee_file.filename,
             "rules_file_name": rules_file.filename,
-            "ai_model_version": "claude-sonnet-4-20250514",
+            "ai_model_version": actual_model,
             "system_version": "1.0.0",
             "ai_processing_time_seconds": ai_response.processing_time_seconds,
             "total_errors": validation_res.summary.total_errors,
             "errors_shown": min(validation_res.summary.total_errors, 200),
             "error_groups_count": len(validation_res.error_groups),
-            "matching_stats": matching_stats
+            "matching_stats": matching_stats,
+            "sheet_order": [data["display_name"] for data in sheet_data_map.values()]
         })
 
         print("\n[OK] Response ready")
@@ -312,21 +292,16 @@ async def validate_data(
 
 @app.post("/interpret-rules")
 async def interpret_rules_only(
-    rules_file: UploadFile = File(..., description="검증 규칙 파일 (Excel B)")
+    rules_file: UploadFile = File(..., description="검증 규칙 파일 (Excel B)"),
+    ai_provider: str = Form("openai", description="AI Provider")
 ):
     """
     규칙만 해석 (검증 실행 없이)
-    - 디버깅 및 규칙 검토용
     """
     try:
-        # Excel B 읽기
         rules_content = await rules_file.read()
-        
-        # 헬퍼 함수 사용하여 규칙 파싱 (로직 통합)
         natural_language_rules, _, _, _ = parse_rules_from_excel(rules_content)
-        
-        # AI 해석
-        ai_response = await ai_interpreter.interpret_rules(natural_language_rules)
+        ai_response = await ai_interpreter.interpret_rules(natural_language_rules, provider=ai_provider)
         
         return {
             "status": "success",
@@ -336,15 +311,15 @@ async def interpret_rules_only(
             "conflicts": [conflict.dict() for conflict in ai_response.conflicts],
             "summary": ai_response.ai_summary
         }
-    
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail={
-                "error": "Rule interpretation failed",
-                "message": str(e)
-            }
+            detail={"error": "Rule interpretation failed", "message": str(e)}
         )
+
+
+# Removed duplicate - see line 754
+
 
 
 @app.get("/kifrs-references")
@@ -538,7 +513,6 @@ async def download_rule_file(file_id: str):
         raise
     except Exception as e:
         print(f"[API] Error downloading rule file: {str(e)}")
-        import traceback
         traceback.print_exc()
         raise HTTPException(
             status_code=500,
@@ -551,23 +525,32 @@ async def download_rule_file(file_id: str):
 
 
 @app.post("/rules/interpret/{file_id}")
-async def interpret_rules(file_id: str, force_reinterpret: bool = False):
+async def interpret_rules(
+    file_id: str,
+    force_reinterpret: bool = False,
+    use_local_parser: bool = False
+):
     """
     규칙 파일의 AI 해석 실행 또는 재해석
 
     Args:
         file_id: 규칙 파일 UUID
         force_reinterpret: True면 기존 해석 무시하고 재해석
+        use_local_parser: True면 로컬 파서만 사용 (AI 오류 방지)
 
     Returns:
         Dict: 해석 결과 통계
     """
     try:
-        print(f"[API] Starting AI interpretation for file: {file_id} (force={force_reinterpret})")
+        print(f"[API] Starting interpretation for file: {file_id} (force={force_reinterpret}, local={use_local_parser})")
 
-        result = await ai_cache_service.interpret_and_cache_rules(file_id, force_reinterpret)
+        result = await ai_cache_service.interpret_and_cache_rules(
+            file_id,
+            force_reinterpret,
+            force_local=use_local_parser
+        )
 
-        print(f"[API] AI interpretation completed")
+        print(f"[API] Interpretation completed")
         return {
             "status": "success",
             "file_id": file_id,
@@ -575,13 +558,56 @@ async def interpret_rules(file_id: str, force_reinterpret: bool = False):
         }
 
     except Exception as e:
-        print(f"[API] Error during AI interpretation: {str(e)}")
-        import traceback
+        print(f"[API] Error during interpretation: {str(e)}")
         traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail={
                 "error": "Failed to interpret rules",
+                "message": str(e),
+                "file_id": file_id
+            }
+        )
+
+
+@app.post("/rules/reinterpret/{file_id}")
+async def reinterpret_rules_from_original(
+    file_id: str,
+    use_local_parser: bool = True
+):
+    """
+    저장된 원본 파일로 규칙 재해석
+
+    기존 AI 해석을 모두 초기화하고 원본 파일로 재해석합니다.
+    use_local_parser=True (기본값)이면 로컬 파서를 사용하여 AI 오류를 방지합니다.
+
+    Args:
+        file_id: 규칙 파일 UUID
+        use_local_parser: True면 로컬 파서만 사용 (권장)
+
+    Returns:
+        Dict: 재해석 결과 통계
+    """
+    try:
+        print(f"[API] Starting re-interpretation for file: {file_id} (local={use_local_parser})")
+
+        result = await rule_service.reinterpret_rules(file_id, use_local_parser)
+
+        print(f"[API] Re-interpretation completed")
+        return {
+            "status": "success",
+            "file_id": file_id,
+            "message": "규칙이 성공적으로 재해석되었습니다.",
+            **result
+        }
+
+    except Exception as e:
+        print(f"[API] Error during re-interpretation: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to re-interpret rules",
                 "message": str(e),
                 "file_id": file_id
             }
@@ -680,7 +706,6 @@ async def validate_with_db_rules(
         )
     except Exception as e:
         print(f"[API] Unexpected error: {str(e)}")
-        import traceback
         traceback.print_exc()
         raise HTTPException(
             status_code=500,
@@ -757,6 +782,146 @@ async def get_dashboard_statistics():
         )
 
 
+# =============================================================================
+# Phase 5: Smart Fix Endpoints
+# =============================================================================
+
+class FixSuggestRequest(BaseModel):
+    session_id: str
+    error_ids: Optional[List[str]] = None
+    ai_provider: str = "openai"
+
+@app.post("/fix/suggest", response_model=List[FixSuggestion])
+async def suggest_fixes(request: FixSuggestRequest):
+    """
+    오류에 대한 AI 수정 제안 생성
+    """
+    try:
+        print(f"[API] Suggest fixes for session: {request.session_id}, errors: {len(request.error_ids) if request.error_ids else 'all'}")
+        suggestions = await fix_service.suggest_fixes(
+            request.session_id,
+            request.error_ids,
+            provider=request.ai_provider
+        )
+        print(f"[API] Generated {len(suggestions)} fix suggestions")
+        return suggestions
+    except Exception as e:
+        print(f"[API] Suggest fixes failed: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Failed to generate fix suggestions", "message": str(e)}
+        )
+
+@app.post("/fix/apply")
+async def apply_fixes(
+    fix_request_json: str = Form(..., description="BatchFixRequest JSON string"),
+    original_file: UploadFile = File(..., description="Original Excel file")
+):
+    """
+    수정 사항을 적용하여 엑셀 파일 다운로드
+    """
+    try:
+        # Parse JSON payload
+        import json
+        request_data = json.loads(fix_request_json)
+        # Validate with Pydantic
+        fix_request = BatchFixRequest(**request_data)
+        
+        print(f"[API] Applying {len(fix_request.fixes)} fixes to file: {original_file.filename}")
+        
+        # Read file content
+        content = await original_file.read()
+        
+        # Apply fixes
+        modified_excel = fix_service.apply_fixes_to_excel(content, fix_request.fixes)
+        
+        # Generate filename
+        base_name = original_file.filename.rsplit('.', 1)[0]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{base_name}_fixed_{timestamp}.xlsx"
+        
+        return StreamingResponse(
+            io.BytesIO(modified_excel),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(modified_excel)),
+                "Cache-Control": "no-cache"
+            }
+        )
+
+    except Exception as e:
+        print(f"[API] Apply fixes failed: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Failed to apply fixes", "message": str(e)}
+        )
+
+
+@app.post("/api/fix/download")
+async def bulk_fix_download(
+    cells_to_fix_json: str = Form(..., description="JSON array of cells to fix"),
+    original_file: UploadFile = File(..., description="Original Excel file")
+):
+    """
+    오류 항목 일괄 수정 후 엑셀 파일 다운로드
+
+    - cells_to_fix: [{sheet, row, column, currentValue, fixType}, ...]
+    - original_file: 원본 엑셀 파일
+    """
+    try:
+        import json
+        cells_to_fix = json.loads(cells_to_fix_json)
+
+        print(f"[API] Bulk fix download: {len(cells_to_fix)} cells from {original_file.filename}")
+
+        # Read original file
+        content = await original_file.read()
+
+        # Apply bulk fixes (filename 전달하여 xls/xlsx 구분)
+        modified_excel = fix_service.apply_bulk_fixes_to_excel(
+            content,
+            cells_to_fix,
+            filename=original_file.filename or ""
+        )
+
+        # Generate filename (한글 인코딩 처리)
+        from urllib.parse import quote
+        base_name = original_file.filename.rsplit('.', 1)[0] if original_file.filename else "data"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{base_name}_fixed_{timestamp}.xlsx"
+        filename_encoded = quote(filename, safe='')
+
+        return StreamingResponse(
+            io.BytesIO(modified_excel),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{filename_encoded}",
+                "Content-Length": str(len(modified_excel)),
+                "Cache-Control": "no-cache"
+            }
+        )
+
+    except Exception as e:
+        print(f"[API] Bulk fix download failed: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Failed to create fixed file", "message": str(e)}
+        )
+
+
+def _safe_str(value, max_length=32000):
+    """엑셀 안전 문자열 변환 (셀 크기 제한 고려)"""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    s = str(value)
+    if len(s) > max_length:
+        return s[:max_length] + "..."
+    return s
+
 @app.post("/download-results")
 async def download_validation_results(validation_response: ValidationResponse):
     """
@@ -786,7 +951,7 @@ async def download_validation_results(validation_response: ValidationResponse):
                 ]
             }
             df_summary = pd.DataFrame(summary_data)
-            df_summary.to_excel(writer, sheet_name="검증 요약", index=False)
+            df_summary.to_excel(writer, sheet_name=sanitize_sheet_name("검증 요약"), index=False)
 
             # 2. 인지 항목 집계 시트
             if validation_response.error_groups:
@@ -797,79 +962,84 @@ async def download_validation_results(validation_response: ValidationResponse):
                         rows_str += f" 외 {len(group.affected_rows) - 20}개"
 
                     groups_data.append({
-                        "시트명": group.sheet,
-                        "열": group.column,
-                        "규칙ID": group.rule_id,
-                        "인지 메시지": group.message,
+                        "시트명": _safe_str(group.sheet),
+                        "열": _safe_str(group.column),
+                        "규칙ID": _safe_str(group.rule_id),
+                        "인지 메시지": _safe_str(group.message, 1000),
                         "인지 횟수": group.count,
-                        "영향받은 행": rows_str,
-                        "샘플 값": ", ".join(map(str, group.sample_values)),
-                        "예상 값": group.expected or "",
-                        "원본 규칙": group.source_rule
+                        "영향받은 행": _safe_str(rows_str, 500),
+                        "샘플 값": _safe_str(", ".join(map(str, group.sample_values[:10])), 500),
+                        "예상 값": _safe_str(group.expected),
+                        "원본 규칙": _safe_str(group.source_rule, 500)
                     })
                 df_groups = pd.DataFrame(groups_data)
-                df_groups.to_excel(writer, sheet_name="인지 항목 집계", index=False)
+                df_groups.to_excel(writer, sheet_name=sanitize_sheet_name("인지 항목 집계"), index=False)
 
             # 3. 개별 인지 목록 시트
             if validation_response.errors:
                 errors_data = []
                 for error in validation_response.errors:
                     errors_data.append({
-                        "시트명": error.sheet or "",
+                        "시트명": _safe_str(error.sheet),
                         "행": error.row,
-                        "열": error.column,
-                        "규칙ID": error.rule_id,
-                        "인지 메시지": error.message,
-                        "실제 값": str(error.actual_value),
-                        "예상 값": error.expected or "",
-                        "원본 규칙": error.source_rule
+                        "열": _safe_str(error.column),
+                        "규칙ID": _safe_str(error.rule_id),
+                        "인지 메시지": _safe_str(error.message, 1000),
+                        "실제 값": _safe_str(error.actual_value, 500),
+                        "예상 값": _safe_str(error.expected),
+                        "원본 규칙": _safe_str(error.source_rule, 500)
                     })
                 df_errors = pd.DataFrame(errors_data)
-                df_errors.to_excel(writer, sheet_name="개별 인지 목록", index=False)
+                df_errors.to_excel(writer, sheet_name=sanitize_sheet_name("개별 인지 목록"), index=False)
 
             # 4. 규칙 충돌 시트
             if validation_response.conflicts:
                 conflicts_data = []
                 for conflict in validation_response.conflicts:
                     conflicts_data.append({
-                        "규칙ID": conflict.rule_id,
-                        "충돌 유형": conflict.conflict_type,
-                        "설명": conflict.description,
-                        "K-IFRS 1019 참조": conflict.kifrs_reference or "",
-                        "영향받는 규칙": ", ".join(conflict.affected_rules),
-                        "권장사항": conflict.recommendation,
-                        "심각도": conflict.severity
+                        "규칙ID": _safe_str(conflict.rule_id),
+                        "충돌 유형": _safe_str(conflict.conflict_type),
+                        "설명": _safe_str(conflict.description, 1000),
+                        "K-IFRS 1019 참조": _safe_str(conflict.kifrs_reference),
+                        "영향받는 규칙": _safe_str(", ".join(conflict.affected_rules), 500),
+                        "권장사항": _safe_str(conflict.recommendation, 1000),
+                        "심각도": _safe_str(conflict.severity)
                     })
                 df_conflicts = pd.DataFrame(conflicts_data)
-                df_conflicts.to_excel(writer, sheet_name="규칙 충돌", index=False)
+                df_conflicts.to_excel(writer, sheet_name=sanitize_sheet_name("규칙 충돌"), index=False)
 
             # 5. 적용된 규칙 시트
             if validation_response.rules_applied:
                 rules_data = []
                 for rule in validation_response.rules_applied:
                     rules_data.append({
-                        "규칙ID": rule.rule_id,
-                        "시트명": rule.source.sheet_name,
-                        "필드명": rule.field_name,
-                        "규칙 유형": rule.rule_type,
-                        "파라미터": str(rule.parameters),
-                        "오류 메시지": rule.error_message_template,
-                        "원본 규칙": rule.source.original_text,
+                        "규칙ID": _safe_str(rule.rule_id),
+                        "시트명": _safe_str(rule.source.sheet_name),
+                        "필드명": _safe_str(rule.field_name),
+                        "규칙 유형": _safe_str(rule.rule_type),
+                        "파라미터": _safe_str(rule.parameters, 500),
+                        "오류 메시지": _safe_str(rule.error_message_template, 500),
+                        "원본 규칙": _safe_str(rule.source.original_text, 500),
                         "신뢰도": rule.confidence_score
                     })
                 df_rules = pd.DataFrame(rules_data)
-                df_rules.to_excel(writer, sheet_name="적용된 규칙", index=False)
-
-        output.seek(0)
+                df_rules.to_excel(writer, sheet_name=sanitize_sheet_name("적용된 규칙"), index=False)
 
         # 파일명 생성
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"DBO_Validation_Results_{timestamp}.xlsx"
+        timestamp = datetime.now().strftime("%Y-%m-%d")
+        filename = f"DBO_Validation_Result_{timestamp}.xlsx"
 
+        # CRITICAL: output을 다시 처음으로 이동
+        output.seek(0)
+
+        # StreamingResponse는 file-like object를 직접 받아야 함
         return StreamingResponse(
-            io.BytesIO(output.read()),
+            output,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-cache"
+            }
         )
 
     except Exception as e:

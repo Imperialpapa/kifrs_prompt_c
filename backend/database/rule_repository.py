@@ -12,6 +12,7 @@ from typing import List, Dict, Any, Optional
 from uuid import UUID
 from datetime import datetime
 from database.supabase_client import supabase
+from utils.logger import debug, info, error
 
 
 class RuleRepository:
@@ -159,6 +160,173 @@ class RuleRepository:
             bool: True if successful
         """
         return await self.update_rule_file(file_id, {'status': 'archived'})
+
+    async def save_original_file(self, file_id: UUID, content: bytes) -> bool:
+        """
+        원본 파일 바이너리 저장
+
+        Args:
+            file_id: UUID of the rule file
+            content: Original file bytes
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            import base64
+            # PostgreSQL BYTEA로 저장하기 위해 base64 인코딩
+            encoded = base64.b64encode(content).decode('utf-8')
+
+            debug(f"Saving original file: {len(content)} bytes -> {len(encoded)} chars base64", "RuleRepository")
+            debug(f"Base64 length mod 4: {len(encoded) % 4}", "RuleRepository")
+
+            result = self.client.table('rule_files') \
+                .update({
+                    'original_file_content': encoded,
+                    'file_size_bytes': len(content),
+                    'updated_at': datetime.now().isoformat()
+                }) \
+                .eq('id', str(file_id)) \
+                .execute()
+
+            success = len(result.data) > 0
+            if success:
+                info(f"Original file saved successfully for file_id: {file_id}", "RuleRepository")
+            else:
+                error(f"Failed to save original file for file_id: {file_id}", "RuleRepository")
+            return success
+        except Exception as e:
+            error(f"Error saving original file: {str(e)}", "RuleRepository")
+            return False
+
+    async def get_original_file(self, file_id: UUID) -> Optional[bytes]:
+        """
+        저장된 원본 파일 바이너리 조회
+
+        Args:
+            file_id: UUID of the rule file
+
+        Returns:
+            bytes or None: Original file content
+        """
+        try:
+            result = self.client.table('rule_files') \
+                .select('original_file_content') \
+                .eq('id', str(file_id)) \
+                .execute()
+
+            if result.data and result.data[0].get('original_file_content'):
+                import base64
+                raw_content = result.data[0]['original_file_content']
+
+                debug(f"Raw content length: {len(raw_content)}, first 50 chars: {raw_content[:50]}...", "RuleRepository")
+
+                # Supabase BYTEA 컬럼은 \x... hex 형식으로 반환
+                if raw_content.startswith('\\x'):
+                    hex_str = raw_content[2:]  # \x 제거
+                    debug(f"Detected hex format, converting {len(hex_str)} hex chars", "RuleRepository")
+                    try:
+                        # hex -> bytes (이게 base64 문자열)
+                        base64_bytes = bytes.fromhex(hex_str)
+                        # base64 문자열 -> 원본 파일
+                        decoded = base64.b64decode(base64_bytes)
+                        info(f"Original file loaded (hex->base64): {len(decoded)} bytes", "RuleRepository")
+                        return decoded
+                    except Exception as e:
+                        error(f"Hex decode failed: {e}", "RuleRepository")
+                        return None
+
+                # 일반 base64 문자열인 경우
+                encoded = raw_content.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+                debug(f"After cleanup length: {len(encoded)}, mod 4: {len(encoded) % 4}", "RuleRepository")
+
+                # Base64 패딩 수정 (4의 배수로 맞춤)
+                remainder = len(encoded) % 4
+                if remainder == 1:
+                    error(f"Invalid base64 length ({len(encoded)}), data may be corrupted", "RuleRepository")
+                    return None
+                elif remainder == 2:
+                    encoded += '=='
+                elif remainder == 3:
+                    encoded += '='
+
+                decoded = base64.b64decode(encoded)
+                info(f"Original file loaded successfully: {len(decoded)} bytes", "RuleRepository")
+                return decoded
+            else:
+                debug(f"No original file content found for file_id: {file_id}", "RuleRepository")
+            return None
+        except Exception as e:
+            error(f"Error getting original file: {str(e)}", "RuleRepository")
+            return None
+
+    async def clear_ai_interpretation(self, file_id: UUID) -> int:
+        """
+        해당 파일의 모든 규칙에서 AI 해석 데이터 초기화
+
+        Args:
+            file_id: UUID of the rule file
+
+        Returns:
+            int: Number of rules cleared
+        """
+        try:
+            result = self.client.table('rules') \
+                .update({
+                    'ai_rule_id': None,
+                    'ai_rule_type': None,
+                    'ai_parameters': None,
+                    'ai_error_message': None,
+                    'ai_interpretation_summary': None,
+                    'ai_confidence_score': None,
+                    'ai_interpreted_at': None,
+                    'ai_model_version': None,
+                    'updated_at': datetime.now().isoformat()
+                }) \
+                .eq('rule_file_id', str(file_id)) \
+                .execute()
+
+            return len(result.data) if result.data else 0
+        except Exception as e:
+            print(f"[RuleRepository] Error clearing AI interpretation: {str(e)}")
+            return 0
+
+    async def update_interpretation_status(
+        self,
+        file_id: UUID,
+        status: str,
+        engine: str = None
+    ) -> bool:
+        """
+        파일의 해석 상태 업데이트
+
+        Args:
+            file_id: UUID of the rule file
+            status: 'pending', 'completed', 'failed'
+            engine: 'local', 'openai', 'anthropic', 'gemini'
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            updates = {
+                'interpretation_status': status,
+                'updated_at': datetime.now().isoformat()
+            }
+            if status == 'completed':
+                updates['last_interpreted_at'] = datetime.now().isoformat()
+            if engine:
+                updates['interpretation_engine'] = engine
+
+            result = self.client.table('rule_files') \
+                .update(updates) \
+                .eq('id', str(file_id)) \
+                .execute()
+
+            return len(result.data) > 0
+        except Exception as e:
+            print(f"[RuleRepository] Error updating interpretation status: {str(e)}")
+            return False
 
     # =========================================================================
     # Rule Operations

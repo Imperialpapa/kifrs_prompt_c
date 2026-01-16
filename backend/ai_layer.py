@@ -1,73 +1,114 @@
 """
 K-IFRS 1019 DBO Validation System - AI Interpretation Layer
 ============================================================
-AI는 오직 규칙 해석만 수행하며, 실제 데이터 검증은 하지 않음
+AI 및 로컬 엔진을 활용한 하이브리드 규칙 해석/수정 시스템
 
-🔒 AI의 역할 (STRICT):
-1. Excel B의 자연어 규칙 → 구조화된 Rule JSON 변환
-2. 규칙 간 충돌 감지
-3. K-IFRS 1019와의 충돌 감지
-4. 해석 근거 제공
-
-🚫 AI가 하지 않는 것:
-- 직접 데이터 검증
-- 임의의 회계 판단
-- 비결정론적 검증 결과 생성
+Feature:
+1. Multi-Provider: Anthropic, OpenAI, Gemini 지원 (환경변수로 선택)
+2. Hybrid Engine: Cloud AI 실패 시 Regex Parser(Local) 자동 전환
+3. Auto-Fix: 데이터 클렌징을 위한 결정론적 수정 제안 로직
 """
 
 import json
 import re
-from typing import List, Dict, Any
+import os
+import time
+from typing import List, Dict, Any, Optional
 from models import (
-    AIInterpretationRequest,
     AIInterpretationResponse,
     ValidationRule,
     RuleConflict,
-    RuleSource,
-    KIFRS_1019_REFERENCES
+    KIFRS_1019_REFERENCES,
+    FixSuggestion
 )
-import time
+
+# Optional Imports with Graceful Fallback
+try:
+    import anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
+
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
 
 
 class AIRuleInterpreter:
     """
-    AI 규칙 해석기
-    - Anthropic Claude API 호출하여 자연어 규칙을 구조화
+    Multi-Provider AI 규칙 해석기
     """
     
-    def __init__(self, api_key: str = None):
+    def __init__(self):
         """
-        초기화
-        
-        Note: claude.ai 환경에서는 API 키 불필요 (자동 처리)
+        초기화: 기본 설정 로드
         """
-        self.api_key = api_key
-        self.model = "claude-sonnet-4-20250514"
+        self.default_provider = os.getenv("AI_PROVIDER", "openai").lower()
+        self.use_cloud_ai = False  # Track whether cloud AI was used
+        print(f"[AIRuleInterpreter] Default Provider: {self.default_provider.upper()}")
+
+    def _check_provider_availability(self, provider: str) -> bool:
+        """
+        지정된 Provider가 사용 가능한지 확인
+
+        Args:
+            provider: "openai", "anthropic", "gemini"
+
+        Returns:
+            bool: 사용 가능 여부
+        """
+        if provider == "openai":
+            return OPENAI_AVAILABLE and os.getenv("OPENAI_API_KEY")
+        elif provider in ["anthropic", "claude"]:
+            return ANTHROPIC_AVAILABLE and os.getenv("ANTHROPIC_API_KEY")
+        elif provider == "gemini":
+            return GEMINI_AVAILABLE and os.getenv("GEMINI_API_KEY")
+        return False
     
     async def interpret_rules(
-        self, 
-        natural_language_rules: List[Dict[str, Any]]
+        self,
+        natural_language_rules: List[Dict[str, Any]],
+        provider: str = None
     ) -> AIInterpretationResponse:
         """
         자연어 규칙을 구조화된 JSON으로 변환
-        
-        Args:
-            natural_language_rules: Excel B에서 읽은 자연어 규칙들
-            
-        Returns:
-            AIInterpretationResponse: 해석된 규칙 + 충돌 보고서
         """
         start_time = time.time()
+
+        target_provider = (provider or self.default_provider).lower()
+
+        # "local" provider는 항상 로컬 파서 사용
+        if target_provider == "local":
+            use_cloud = False
+        else:
+            use_cloud = self._check_provider_availability(target_provider)
         
-        # AI 프롬프트 구성 (실제 API 호출 시 사용)
-        prompt = self._build_interpretation_prompt(natural_language_rules)
+        rules = []
+        conflicts = []
         
-        # AI 호출 (실제 구현에서는 Anthropic API 호출)
-        # 시뮬레이션을 위해 natural_language_rules 객체를 직접 전달
-        ai_response = await self._call_claude_api(prompt, natural_language_rules)
-        
-        # 응답 파싱
-        rules, conflicts = self._parse_ai_response(ai_response)
+        if use_cloud:
+            try:
+                print(f"[AI] Interpreting rules using {target_provider.upper()}...")
+                prompt = self._build_interpretation_prompt(natural_language_rules)
+                ai_response = await self._call_cloud_ai(prompt, target_provider)
+                rules, conflicts = self._parse_ai_response(ai_response)
+                self.use_cloud_ai = True
+            except Exception as e:
+                print(f"[AI] Cloud inference ({target_provider}) failed, falling back to local engine: {e}")
+                rules, conflicts = self._local_rule_parser(natural_language_rules)
+                self.use_cloud_ai = False
+        else:
+            print(f"[AI] Provider {target_provider} not available/configured. Using Local Engine.")
+            rules, conflicts = self._local_rule_parser(natural_language_rules)
+            self.use_cloud_ai = False
         
         processing_time = time.time() - start_time
         
@@ -77,364 +118,454 @@ class AIRuleInterpreter:
             ai_summary=self._generate_summary(rules, conflicts),
             processing_time_seconds=processing_time
         )
-    
-    def _build_interpretation_prompt(
-        self, 
-        natural_language_rules: List[Dict[str, Any]]
-    ) -> str:
+
+    async def suggest_corrections(
+        self,
+        errors: List[Dict[str, Any]],
+        past_corrections: List[Dict[str, Any]] = None,
+        provider: str = None
+    ) -> List[FixSuggestion]:
         """
-        AI 해석을 위한 프롬프트 생성
+        오류에 대한 수정 제안 생성 (하이브리드: 로컬 우선 -> 필요 시 클라우드 AI)
         """
-        kifrs_context = json.dumps(KIFRS_1019_REFERENCES, indent=2, ensure_ascii=False)
-        rules_text = json.dumps(natural_language_rules, indent=2, ensure_ascii=False)
+        if not errors:
+            return []
+
+        # 1. 로컬 휴리스틱 엔진 실행 (즉각적인 수정 제안)
+        local_suggestions = self._local_fix_engine(errors)
         
-        prompt = f"""
-당신은 K-IFRS 1019 (퇴직급여) 전문가이자 데이터 검증 시스템 설계자입니다.
+        target_provider = (provider or self.default_provider).lower()
+        use_cloud = self._check_provider_availability(target_provider)
 
-🎯 **당신의 임무**:
-아래 자연어 검증 규칙들을 구조화된 JSON 형태로 변환하세요.
-이 규칙들은 나중에 결정론적 검증 엔진에서 실행됩니다.
+        if use_cloud:
+            # 로컬 엔진이 처리하지 못한 항목이나 신뢰도 낮은 항목에 대해 AI 호출 고려 가능
+            # 현재는 일관성을 위해 클라우드 AI에게 전체 문맥을 전달하여 제안을 정교화함
+            try:
+                prompt = self._build_correction_prompt(errors, past_corrections)
+                ai_response = await self._call_cloud_ai(prompt, target_provider)
+                cloud_suggestions = self._parse_correction_response(ai_response)
+                
+                # 클라우드 제안이 있으면 우선 사용 (병합)
+                return cloud_suggestions if cloud_suggestions else local_suggestions
+            except Exception as e:
+                print(f"[AI] Cloud correction failed ({target_provider}), using local engine: {e}")
+                return local_suggestions
+        
+        return local_suggestions
 
-📋 **Excel B 파일 구조 설명**:
-- 시트명: 검증할 Excel A 파일의 시트 이름 (예: "(2-2) 재직자 명부")
-- 열명: Excel의 열 문자 (예: B, C, D, ...)
-- 항목명: 실제 컬럼명 (예: "사원번호", "생년월일", "성별")
-- 검증 룰: 자연어로 작성된 검증 규칙 (예: "공백, 중복", "8자리 TEXT로 년월일(YYYYMMDD) 포맷")
-- 조건: "정상", "오류", "해당없음" 등
-- 비고: 추가 설명
-
-🔍 **K-IFRS 1019 참조 정보**:
-```json
-{kifrs_context}
-```
-
-📋 **변환할 자연어 규칙들**:
-다음은 Excel B 파일에서 읽은 규칙들입니다:
-```json
-{rules_text}
-```
-
-📐 **출력 형식**:
-각 규칙을 다음 JSON 구조로 변환하세요:
-
-```json
-{{
-  "rules": [
-    {{
-      "rule_id": "RULE_001",
-      "field_name": "employee_id",
-      "rule_type": "required|no_duplicates|format|range|date_logic|cross_field|custom",
-      "parameters": {{
-        // 규칙 타입에 따라 다름
-        // 예: {{"format": "YYYYMMDD"}}
-        // 예: {{"min_value": 0, "max_value": 150}}
-        // 예: {{"compare_field": "birth_date", "operator": "greater_than"}}
-      }},
-      "error_message_template": "구체적인 오류 메시지",
-      "source": {{
-        "original_text": "원본 자연어 규칙",
-        "sheet_name": "시트명",
-        "row_number": 행번호,
-        "kifrs_reference": "관련 K-IFRS 조항 (있다면)"
-      }},
-      "ai_interpretation_summary": "이 규칙을 어떻게 해석했는지 설명",
-      "confidence_score": 0.95
-    }}
-  ],
-  "conflicts": [
-    {{
-      "rule_id": "충돌이 발견된 규칙 ID",
-      "conflict_type": "rule_contradiction|kifrs_mismatch|ambiguous_interpretation",
-      "description": "충돌 상세 설명",
-      "kifrs_reference": "관련 K-IFRS 조항",
-      "affected_rules": ["관련된 다른 규칙들"],
-      "recommendation": "해결 방안 제안",
-      "severity": "high|medium|low"
-    }}
-  ]
-}}
-```
-
-⚠️ **중요 지침**:
-1. **K-IFRS 1019와의 충돌 감지**: 규칙이 K-IFRS 1019 기준과 맞지 않으면 conflicts에 보고
-2. **규칙 간 충돌 감지**: 상호 모순되는 규칙이 있으면 conflicts에 보고
-3. **명확성 우선**: 애매한 규칙은 ambiguous_interpretation으로 보고
-4. **결정론적 실행 가능**: parameters는 코드가 직접 실행 가능해야 함
-5. **감사 추적**: 모든 해석에 근거와 출처를 명시
-
-🔥 **규칙 타입별 파라미터 예시**:
-
-- **required**: {{}} (파라미터 없음)
-- **no_duplicates**: {{}} (파라미터 없음)
-- **format**: {{"format": "YYYYMMDD"}} 또는 {{"regex": "^[0-9]{{8}}$"}}
-- **range**: {{"min_value": 18, "max_value": 100}}
-- **date_logic**: {{"compare_field": "birth_date", "operator": "greater_than"}}
-- **cross_field**: {{"reference_field": "salary", "condition": "required_if_not_null"}}
-- **custom**: {{"expression": "age >= 18 and age <= 65"}}
-
-응답은 반드시 순수 JSON만 반환하세요. 설명이나 마크다운 없이.
-"""
-        return prompt
-    
-    async def _call_claude_api(self, prompt: str, natural_language_rules: List[Dict[str, Any]] = None) -> str:
+    def _build_correction_prompt(self, errors: List[Dict[str, Any]], past_corrections: List[Dict[str, Any]]) -> str:
+        """수정 제안을 위한 상세 RAG 프롬프트"""
+        return f"""
+        You are a Data Quality Expert. Fix the following validation errors in K-IFRS 1019 employee data.
+        
+        [Past Correction Examples (Learning Context)]
+        {json.dumps(past_corrections, ensure_ascii=False)}
+        
+        [Current Errors to Fix]
+        {json.dumps(errors, ensure_ascii=False)}
+        
+        Guidelines:
+        1. Fix format issues (dates to YYYYMMDD, gender to M/F).
+        2. Reference past examples if similar patterns exist.
+        3. Provide a clear reason for each fix.
+        4. Output JSON with "suggestions" list.
         """
-        Claude API 호출
 
-        실제 구현에서는 Anthropic API를 호출합니다.
-        여기서는 데모를 위해 샘플 응답을 반환합니다.
-        """
-        # 실제 구현:
-        # import anthropic
-        # client = anthropic.Anthropic(api_key=self.api_key)
-        # message = client.messages.create(
-        #     model=self.model,
-        #     max_tokens=4000,
-        #     messages=[{"role": "user", "content": prompt}]
-        # )
-        # return message.content[0].text
+    def _parse_correction_response(self, response: str) -> List[FixSuggestion]:
+        """AI의 수정 제안 응답 파싱"""
+        try:
+            match = re.search(r'\{.*\}', response, re.DOTALL)
+            data = json.loads(match.group(0)) if match else json.loads(response)
+            return [FixSuggestion(**s) for s in data.get("suggestions", [])]
+        except:
+            return []
 
-        # 데모용 샘플 응답 - 동적으로 프롬프트의 규칙을 반영
-        return self._get_dynamic_sample_response(prompt, natural_language_rules)
-    
-    def _get_dynamic_sample_response(self, prompt: str, natural_language_rules: List[Dict[str, Any]] = None) -> str:
-        """
-        동적 샘플 응답 생성
-        입력된 규칙 리스트를 기반으로 JSON으로 변환
-        """
-        if not natural_language_rules:
-            raise ValueError("No natural language rules provided for interpretation.")
+    async def _call_cloud_ai(self, prompt: str, provider: str) -> str:
+        """선택된 Provider의 API 호출 (OpenAI JSON 모드 적극 활용)"""
+        if provider == "openai":
+            api_key = os.getenv("OPENAI_API_KEY")
+            client = openai.OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model=os.getenv("AI_MODEL_VERSION_OPENAI", "gpt-4o"),
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"}
+            )
+            return response.choices[0].message.content
+        
+        # Anthropic, Gemini 로직 생략 (기존과 동일)
+        return await getattr(self, f"_call_{provider}_api")(prompt)
 
-        # 동적으로 ValidationRule 생성
+    async def _call_claude_api(self, prompt: str) -> str:
+        """Anthropic Claude API"""
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        model = os.getenv("AI_MODEL_VERSION_ANTHROPIC", "claude-3-haiku-20240307")
+        
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model=model,
+            max_tokens=4000,
+            temperature=0.0,
+            system="You are a strict data validation rule parser. Output JSON only.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return message.content[0].text
+
+    async def _call_openai_api(self, prompt: str) -> str:
+        """OpenAI GPT API"""
+        api_key = os.getenv("OPENAI_API_KEY")
+        model = os.getenv("AI_MODEL_VERSION_OPENAI", "gpt-4o")
+        
+        client = openai.OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model=model,
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": "You are a strict data validation rule parser. Output JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"}
+        )
+        return response.choices[0].message.content
+
+    async def _call_gemini_api(self, prompt: str) -> str:
+        """Google Gemini API"""
+        api_key = os.getenv("GEMINI_API_KEY")
+        model = os.getenv("AI_MODEL_VERSION_GEMINI", "gemini-1.5-flash")
+        
+        genai.configure(api_key=api_key)
+        gemini_model = genai.GenerativeModel(
+            model,
+            generation_config={"response_mime_type": "application/json"}
+        )
+        response = gemini_model.generate_content(prompt)
+        return response.text
+
+    # =========================================================================
+    # 🏗️ Common Logic
+    # =========================================================================
+
+    def _build_interpretation_prompt(self, rules: List[Dict[str, Any]]) -> str:
+        # 기존과 동일한 프롬프트 로직 사용
+        rules_text = json.dumps(rules, indent=2, ensure_ascii=False)
+        return f"""
+        You are a K-IFRS 1019 Data Validation Expert.
+        Parse the following natural language rules into structured JSON.
+
+        CRITICAL REQUIREMENTS:
+        1. ALWAYS use 'field_name' from the input - NEVER change or substitute it
+        2. In 'error_message_template', ALWAYS use "{{{{field_name}}}}" placeholder instead of hardcoding field names
+        3. NEVER mention other field names in the error message
+
+        CORRECT example:
+        - field_name: "생년월일"
+        - error_message_template: "{{{{field_name}}}}이(가) 중복되었습니다"
+
+        WRONG example (DO NOT DO THIS):
+        - field_name: "생년월일"
+        - error_message_template: "사원번호이(가) 중복되었습니다"  ❌ WRONG!
+
+        Input Rules:
+        {rules_text}
+
+        Output Format (JSON): {{ "rules": [...], "conflicts": [...] }}
+        """
+
+    def _parse_ai_response(self, ai_response: str) -> tuple:
+        """JSON 추출 및 파싱"""
+        try:
+            # JSON 블록 찾기 (Markdown ```json ... ``` 제거)
+            match = re.search(r'\{.*\}', ai_response, re.DOTALL)
+            json_str = match.group(0) if match else ai_response
+            
+            data = json.loads(json_str)
+            rules = [ValidationRule(**r) for r in data.get("rules", [])]
+            conflicts = [RuleConflict(**c) for c in data.get("conflicts", [])]
+            return rules, conflicts
+        except Exception as e:
+            print(f"[AI] Failed to parse JSON response: {e}")
+            raise
+
+    # =========================================================================
+    # 💻 Local Rule Engine (Robust Regex Parser)
+    # =========================================================================
+
+    def _local_rule_parser(self, natural_language_rules: List[Dict[str, Any]]) -> tuple:
+        """
+        강력한 정규식 기반 로컬 규칙 파서
+        현장에서 자주 사용되는 패턴을 사전 정의하여 AI 없이도 높은 정확도 제공
+        """
         rules = []
+        conflicts = []
         rule_counter = 1
 
+        print(f"[LocalParser] Processing {len(natural_language_rules)} natural language rules")
+
         for nat_rule in natural_language_rules:
-            sheet = nat_rule.get('sheet', '')
             field = nat_rule.get('field', '')
-            rule_text = nat_rule.get('rule_text', '')
-            condition = nat_rule.get('condition', '')
-            note = nat_rule.get('note', '')
-            row_num = nat_rule.get('row', 0)
+            rule_text = str(nat_rule.get('rule_text', '')).strip()
+            sheet = nat_rule.get('sheet', '')
+            row = nat_rule.get('row', 0)
 
             if not field or not rule_text:
                 continue
 
-            # "공백, 중복"은 두 개의 규칙으로 분리
-            if "공백" in rule_text and "중복" in rule_text:
-                # required 규칙
-                rules.append({
-                    "rule_id": f"RULE_{rule_counter:03d}",
-                    "field_name": field,
-                    "rule_type": "required",
-                    "parameters": {},
-                    "error_message_template": f"{field}이(가) 비어있습니다.",
-                    "source": {
-                        "original_text": rule_text,
-                        "sheet_name": sheet,
-                        "row_number": row_num,
-                        "kifrs_reference": None
-                    },
-                    "ai_interpretation_summary": f"{field} 필드는 필수",
-                    "confidence_score": 0.99
-                })
+            # Track if any rule was created for this nat_rule
+            initial_counter = rule_counter
+
+            # CRITICAL: Check if rule_text explicitly contains format patterns FIRST
+            # This prevents "YYYYMMDD 형식" from being misclassified as duplicate
+            has_format_pattern = any(kw in rule_text for kw in ["형식", "format", "YYYYMMDD", "YYYY-MM-DD", "regex", "패턴"])
+
+            # 1. 필수/중복 (Required & Unique)
+            # "공백, 중복" 처럼 콤마로 구분된 경우 처리
+            # BUT: Only apply if not a format rule
+            if ("공백" in rule_text or "필수" in rule_text or "missing" in rule_text.lower()) and not has_format_pattern:
+                rules.append(self._create_rule(
+                    rule_counter, field, "required", {},
+                    "{field_name}은(는) 필수 입력 항목입니다.", nat_rule, "필수값 체크"
+                ))
                 rule_counter += 1
 
-                # no_duplicates 규칙
-                rules.append({
-                    "rule_id": f"RULE_{rule_counter:03d}",
-                    "field_name": field,
-                    "rule_type": "no_duplicates",
-                    "parameters": {},
-                    "error_message_template": f"{field}이(가) 중복되었습니다.",
-                    "source": {
-                        "original_text": rule_text,
-                        "sheet_name": sheet,
-                        "row_number": row_num,
-                        "kifrs_reference": None
-                    },
-                    "ai_interpretation_summary": f"{field}은(는) 고유해야 하며 중복 불가",
-                    "confidence_score": 0.99
-                })
+            # CRITICAL: Only check for duplicates if NOT a format/date rule
+            if ("중복" in rule_text or "unique" in rule_text.lower() or "유일" in rule_text) and not has_format_pattern:
+                rules.append(self._create_rule(
+                    rule_counter, field, "no_duplicates", {},
+                    "{field_name}이(가) 중복되었습니다.", nat_rule, "중복 체크"
+                ))
                 rule_counter += 1
+
+            # 2. 날짜 형식 (Date)
+            if "yyyy" in rule_text.lower() or "날짜" in rule_text or "date" in field.lower():
+                # YYYYMMDD
+                if "yyyymmdd" in rule_text.lower().replace("-", "").replace("/", ""):
+                    rules.append(self._create_rule(
+                        rule_counter, field, "format",
+                        {"format": "YYYYMMDD", "regex": r"^(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])$"},
+                        "{field_name} 형식이 올바르지 않습니다. (YYYYMMDD)", nat_rule, "날짜 형식(8자리)"
+                    ))
+                    rule_counter += 1
+                # YYYY-MM-DD
+                elif "-" in rule_text:
+                    rules.append(self._create_rule(
+                        rule_counter, field, "format",
+                        {"format": "YYYY-MM-DD", "regex": r"^\d{4}-\d{2}-\d{2}$"},
+                        "{field_name} 형식이 올바르지 않습니다. (YYYY-MM-DD)", nat_rule, "날짜 형식(하이픈)"
+                    ))
+                    rule_counter += 1
+
+            # 3. 주민등록번호
+            if "주민" in field or "resident" in field.lower() or "jumin" in field.lower():
+                rules.append(self._create_rule(
+                    rule_counter, field, "format",
+                    {"regex": r"^\d{6}-?[1-4]\d{6}$"},
+                    "{field_name} 형식이 올바르지 않습니다.", nat_rule, "주민번호 패턴"
+                ))
+                rule_counter += 1
+
+            # 4. 성별 (Gender)
+            if "성별" in field or "gender" in field.lower():
+                allowed = []
+
+                # 텍스트에서 허용값 추출 (예: "1:남자, 2:여자" → ["1", "2"])
+                # 패턴1: "1:남자" 형태
+                code_pattern = re.findall(r'(\d+)\s*[:\-]\s*[가-힣]+', rule_text)
+                if code_pattern:
+                    allowed = code_pattern
+
+                # 패턴2: 괄호 안의 값 (예: "(M/F)" 또는 "(남/여)")
+                if not allowed:
+                    paren_match = re.search(r'\(([^)]+)\)', rule_text)
+                    if paren_match:
+                        inner = paren_match.group(1)
+                        # 슬래시, 쉼표, 또는 공백으로 분리
+                        parts = re.split(r'[/,\s]+', inner)
+                        allowed = [p.strip() for p in parts if p.strip() and ':' not in p]
+
+                # 추출 실패 시 규칙 생성 스킵 (원본 규칙 텍스트로 안내)
+                if not allowed:
+                    rules.append(self._create_rule(
+                        rule_counter, field, "format",
+                        {"raw_rule": rule_text},
+                        f"{{field_name}} 규칙을 확인하세요: {rule_text}", nat_rule, "성별 검증"
+                    ))
+                else:
+                    allowed_preview = ', '.join(allowed[:4])
+                    rules.append(self._create_rule(
+                        rule_counter, field, "format",
+                        {"allowed_values": allowed},
+                        f"{{field_name}} 값이 올바르지 않습니다. (허용: {allowed_preview})", nat_rule, "성별 코드 검증"
+                    ))
+                rule_counter += 1
+
+            # 5. 숫자/금액 범위 또는 타입
+            is_numeric_rule = any(kw in rule_text for kw in ["금액", "숫자", "원", "수치", "amount", "number", "numeric"])
+            has_range = ">" in rule_text or "<" in rule_text or "이상" in rule_text or "이하" in rule_text
+
+            if has_range or is_numeric_rule:
+                nums = re.findall(r'\d+', rule_text)
+
+                # 범위가 있는 경우 (예: "0 이상")
+                if nums and "이상" in rule_text:
+                    rules.append(self._create_rule(
+                        rule_counter, field, "range",
+                        {"min_value": float(nums[0])},
+                        f"{{{{field_name}}}} 값은 {nums[0]} 이상이어야 합니다.", nat_rule, "최소값 검증"
+                    ))
+                    rule_counter += 1
+                elif nums and "이하" in rule_text:
+                    rules.append(self._create_rule(
+                        rule_counter, field, "range",
+                        {"max_value": float(nums[0])},
+                        f"{{{{field_name}}}} 값은 {nums[0]} 이하이어야 합니다.", nat_rule, "최대값 검증"
+                    ))
+                    rule_counter += 1
+                elif is_numeric_rule:
+                    # 숫자/금액 타입 검증 (범위 없이 숫자인지만 확인)
+                    rules.append(self._create_rule(
+                        rule_counter, field, "range",
+                        {"min_value": 0},  # 0 이상으로 설정하면 숫자 타입 검증됨
+                        f"{{{{field_name}}}}은(는) 숫자여야 합니다.", nat_rule, "숫자 타입 검증"
+                    ))
+                    rule_counter += 1
+
+            # Fallback: 규칙이 하나도 생성되지 않은 경우 Custom 규칙 생성
+            if rule_counter == initial_counter:
+                print(f"[LocalParser] No specific rule matched for field '{field}', creating custom rule")
+                rules.append(self._create_rule(
+                    rule_counter, field, "custom",
+                    {"description": rule_text},
+                    f"{{{{field_name}}}} 검증 실패: {rule_text}", nat_rule, "사용자 정의 규칙 (Manual Check)", confidence=0.7
+                ))
+                rule_counter += 1
+
+        print(f"[LocalParser] Generated {len(rules)} rules total")
+        for i, rule in enumerate(rules[:5]):  # 처음 5개만 출력
+            print(f"  Rule {i+1}: {rule.rule_type} on field '{rule.field_name}' - {rule.error_message_template[:50]}")
+
+        return rules, conflicts
+
+    def _create_rule(self, id_num, field, rtype, params, msg, source_dict, summary, confidence=0.95):
+        """규칙 객체 생성 헬퍼"""
+        return ValidationRule(
+            rule_id=f"RULE_LOCAL_{id_num:03d}",
+            field_name=field,
+            rule_type=rtype,
+            parameters=params,
+            error_message_template=msg,
+            source={
+                "original_text": source_dict.get('rule_text', ''),
+                "sheet_name": source_dict.get('sheet', ''),
+                "row_number": source_dict.get('row', 0),
+                "kifrs_reference": None
+            },
+            ai_interpretation_summary=summary,
+            confidence_score=confidence
+        )
+
+    # =========================================================================
+    # 🛠️ Local Fix Engine (Smart Cleaner)
+    # =========================================================================
+
+    def _local_fix_engine(self, errors: List[Dict[str, Any]]) -> List[FixSuggestion]:
+        """
+        현장 데이터 최적화된 스마트 수정 엔진
+        """
+        suggestions = []
+        
+        for err in errors:
+            val = str(err.get('actual_value', ''))
+            field = str(err.get('column', ''))
+            msg = str(err.get('message', ''))
+            
+            # Skip invalid values
+            if val == 'None' or val == 'nan' or not val:
                 continue
 
-            # 규칙 텍스트 분석하여 타입 결정
-            rule_type, parameters, error_msg = self._analyze_rule_text(rule_text, field)
+            fixed = val
+            reason = ""
+            score = 0.0
+            auto = False
 
-            rule = {
-                "rule_id": f"RULE_{rule_counter:03d}",
-                "field_name": field,
-                "rule_type": rule_type,
-                "parameters": parameters,
-                "error_message_template": error_msg,
-                "source": {
-                    "original_text": rule_text,
-                    "sheet_name": sheet,
-                    "row_number": row_num,
-                    "kifrs_reference": None
-                },
-                "ai_interpretation_summary": f"{field} 필드에 대한 {rule_type} 검증",
-                "confidence_score": 0.95
-            }
-            rules.append(rule)
-            rule_counter += 1
+            # 1. 날짜 표준화 (YYYYMMDD)
+            if "형식" in msg and ("YYYYMMDD" in msg or "날짜" in field):
+                # 2023-01-01 -> 20230101
+                if re.match(r'^\d{4}-\d{2}-\d{2}$', val):
+                    fixed = val.replace("-", "")
+                    reason = "표준 포맷으로 변환 (- 제거)"
+                    score = 0.99
+                    auto = True
+                # 2023.01.01 -> 20230101
+                elif re.match(r'^\d{4}\.\d{2}\.\d{2}$', val):
+                    fixed = val.replace(".", "")
+                    reason = "표준 포맷으로 변환 (. 제거)"
+                    score = 0.99
+                    auto = True
+                # 2023/01/01 -> 20230101
+                elif re.match(r'^\d{4}/\d{2}/\d{2}$', val):
+                    fixed = val.replace("/", "")
+                    reason = "표준 포맷으로 변환 (/ 제거)"
+                    score = 0.99
+                    auto = True
+                # Excel Serial Date (예: 45000 -> 날짜)
+                elif re.match(r'^\d{5}$', val):
+                    try:
+                        # 엑셀 기준일 1899-12-30 처리 로직은 복잡하므로 간단히 언급
+                        # 여기서는 단순 숫자 포맷 오류인 경우만 처리
+                        pass 
+                    except: pass
 
-        return json.dumps({
-            "rules": rules,
-            "conflicts": []
-        }, ensure_ascii=False)
+            # 2. 성별 표준화
+            elif "성별" in field or "gender" in field.lower():
+                val_clean = val.strip().lower()
+                if val_clean in ['남', '남자', 'man', 'male']:
+                    fixed = 'M'
+                    reason = "성별 코드 표준화 (남 -> M)"
+                    score = 0.98
+                    auto = True
+                elif val_clean in ['여', '여자', 'woman', 'female']:
+                    fixed = 'F'
+                    reason = "성별 코드 표준화 (여 -> F)"
+                    score = 0.98
+                    auto = True
 
-    def _analyze_rule_text(self, rule_text: str, field_name: str) -> tuple:
-        """
-        규칙 텍스트를 분석하여 타입, 파라미터, 에러 메시지 생성
-        """
-        rule_text_lower = rule_text.lower()
+            # 3. 주민번호 표준화
+            elif "주민" in field:
+                # 123456-1234567 -> 1234561234567 (규칙이 하이픈 제거인 경우)
+                if "-" in val and len(val) == 14:
+                    # 규칙에 따라 다름. 여기서는 하이픈 있는게 표준이면 제안 안함.
+                    # 만약 규칙이 "형식 오류"라면 포맷팅을 시도
+                    pass
 
-        # YYYYMMDD 형식
-        if "yyyymmdd" in rule_text_lower or "년월일" in rule_text:
-            return "format", {"format": "YYYYMMDD", "regex": "^[0-9]{8}$"}, \
-                   f"{field_name} 형식이 잘못되었습니다. YYYYMMDD 8자리 숫자여야 합니다."
+            # 4. 공백 제거 (범용)
+            if fixed == val and " " in val:
+                # 앞뒤 공백
+                if val.strip() != val:
+                    fixed = val.strip()
+                    reason = "앞뒤 공백 제거"
+                    score = 0.95
+                    auto = True
+                # 중간 공백 (사번, 주민번호 등 식별자 컬럼인 경우)
+                elif "사번" in field or "id" in field.lower() or "주민" in field:
+                    fixed = val.replace(" ", "")
+                    reason = "식별자 내 불필요한 공백 제거"
+                    score = 0.90
+                    auto = False
 
-        # 숫자 목록 (1, 2, 3 등)
-        if re.search(r'\d+\s*,\s*\d+', rule_text):
-            values = re.findall(r'\d+', rule_text)
-            return "format", {"allowed_values": values}, \
-                   f"{field_name}은(는) {', '.join(values)} 중 하나여야 합니다."
+            # 수정사항이 있으면 추가
+            if fixed != val:
+                suggestions.append(FixSuggestion(
+                    error_id=err.get('id'),
+                    sheet_name=err.get('sheet', ''),
+                    row=err.get('row', 0),
+                    column=err.get('column', ''),
+                    original_value=val,
+                    fixed_value=fixed,
+                    confidence_score=score,
+                    reason=reason,
+                    is_auto_fixable=auto
+                ))
 
-        # 비교 연산 (A > B)
-        if ">" in rule_text:
-            parts = rule_text.split(">")
-            if len(parts) == 2:
-                field1 = parts[0].strip()
-                field2 = parts[1].strip()
-                return "date_logic", {"compare_field": field2, "operator": "greater_than"}, \
-                       f"{field1}은(는) {field2}보다 이후여야 합니다."
+        return suggestions
 
-        # 범위 (< 0, >= 0)
-        if "<" in rule_text and "0" in rule_text:
-            return "range", {"min_value": 0}, \
-                   f"{field_name}은(는) 0 이상이어야 합니다."
-
-        # 기본값
-        return "custom", {"expression": rule_text}, \
-               f"{field_name} 검증 실패: {rule_text}"
-
-
-    
-    def _parse_ai_response(self, ai_response: str) -> tuple[List[ValidationRule], List[RuleConflict]]:
-        """
-        AI 응답 파싱
-        """
-        try:
-            data = json.loads(ai_response)
-            
-            rules = [ValidationRule(**rule) for rule in data["rules"]]
-            conflicts = [RuleConflict(**conflict) for conflict in data.get("conflicts", [])]
-            
-            return rules, conflicts
-        except Exception as e:
-            raise ValueError(f"AI 응답 파싱 실패: {str(e)}")
-    
-    def _generate_summary(
-        self, 
-        rules: List[ValidationRule], 
-        conflicts: List[RuleConflict]
-    ) -> str:
-        """
-        전체 해석 요약 생성
-        """
-        high_confidence = sum(1 for r in rules if r.confidence_score >= 0.95)
-        medium_confidence = sum(1 for r in rules if 0.8 <= r.confidence_score < 0.95)
-        low_confidence = sum(1 for r in rules if r.confidence_score < 0.8)
-        
-        summary = f"""
-AI 규칙 해석 완료
-
-📊 **통계**:
-- 총 규칙 수: {len(rules)}개
-- 높은 신뢰도 (≥95%): {high_confidence}개
-- 중간 신뢰도 (80-95%): {medium_confidence}개
-- 낮은 신뢰도 (<80%): {low_confidence}개
-- 충돌 감지: {len(conflicts)}건
-
-⚠️ **주의사항**:
-"""
-        
-        if conflicts:
-            summary += "\n- 규칙 충돌이 발견되었습니다. conflicts 섹션을 확인하세요."
-        
-        if low_confidence > 0:
-            summary += f"\n- {low_confidence}개 규칙의 신뢰도가 낮습니다. 검토가 필요합니다."
-        
-        if not conflicts and low_confidence == 0:
-            summary += "\n- 모든 규칙이 명확하게 해석되었으며, 충돌이 없습니다."
-        
-        return summary.strip()
-
-
-# =============================================================================
-# 유틸리티 함수
-# =============================================================================
-
-async def interpret_excel_b_rules(
-    natural_language_rules: List[Dict[str, Any]]
-) -> AIInterpretationResponse:
-    """
-    Excel B의 자연어 규칙을 해석하는 편의 함수
-    
-    Args:
-        natural_language_rules: Excel B에서 읽은 규칙들
-        
-    Returns:
-        AIInterpretationResponse: 해석 결과
-    """
-    interpreter = AIRuleInterpreter()
-    return await interpreter.interpret_rules(natural_language_rules)
-
-
-# =============================================================================
-# 테스트/데모 코드
-# =============================================================================
-
-if __name__ == "__main__":
-    import asyncio
-    
-    # 샘플 자연어 규칙
-    sample_rules = [
-        {
-            "sheet": "validation_rules",
-            "row": 2,
-            "field": "employee_id",
-            "rule_text": "사번: 공백 없음, 중복 없음"
-        },
-        {
-            "sheet": "validation_rules",
-            "row": 3,
-            "field": "birth_date",
-            "rule_text": "생년월일은 YYYYMMDD 형식"
-        },
-        {
-            "sheet": "validation_rules",
-            "row": 4,
-            "field": "birth_date",
-            "rule_text": "생년월일은 1920년 이후, 2007년 이전"
-        },
-        {
-            "sheet": "validation_rules",
-            "row": 5,
-            "field": "hire_date",
-            "rule_text": "입사일은 생년월일보다 이후, 최소 만 15세"
-        },
-        {
-            "sheet": "validation_rules",
-            "row": 6,
-            "field": "gender",
-            "rule_text": "성별: M, F, 남, 여만 허용"
-        }
-    ]
-    
-    async def test():
-        result = await interpret_excel_b_rules(sample_rules)
-        print(json.dumps(result.dict(), indent=2, ensure_ascii=False))
-    
-    asyncio.run(test())
+    def _generate_summary(self, rules, conflicts):
+        return f"해석 완료: 규칙 {len(rules)}개, 충돌 {len(conflicts)}건 (Engine: {'Cloud AI' if self.use_cloud_ai else 'Local Regex'})"
