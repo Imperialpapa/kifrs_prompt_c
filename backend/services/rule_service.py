@@ -14,7 +14,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 
 from database.rule_repository import RuleRepository
 from utils.excel_parser import parse_rules_from_excel, normalize_sheet_name, get_canonical_name
-from models import RuleFileUpload, RuleFileResponse
+from models import RuleFileUpload, RuleFileResponse, RuleCreate
 from services.ai_cache_service import AICacheService
 
 
@@ -202,6 +202,52 @@ class RuleService:
             print(f"[RuleService] Error during upload: {str(e)}")
             raise Exception(f"Failed to upload rule file: {str(e)}")
 
+    async def create_single_rule(self, rule_data: RuleCreate) -> str:
+        """
+        Create a single rule manually
+
+        Args:
+            rule_data: Rule creation data
+
+        Returns:
+            str: ID of the created rule
+        """
+        print(f"[RuleService] Creating single rule for file: {rule_data.rule_file_id}")
+        try:
+            # Prepare rule record
+            rule_record = {
+                "rule_file_id": rule_data.rule_file_id,
+                "sheet_name": rule_data.sheet_name,
+                "canonical_sheet_name": get_canonical_name(rule_data.sheet_name),
+                "display_sheet_name": rule_data.sheet_name,
+                "row_number": rule_data.row_number,
+                "column_letter": "Manual",  # Placeholder
+                "field_name": rule_data.column_name,
+                "rule_text": rule_data.rule_text,
+                "condition": rule_data.condition,
+                "is_active": True,
+                # AI fields (manual input or default)
+                "ai_rule_type": rule_data.ai_rule_type,
+                "ai_parameters": rule_data.ai_parameters,
+                "ai_confidence_score": 1.0,  # User manually created -> 100% confidence
+                "ai_interpretation_summary": "사용자 직접 입력 규칙",
+                "ai_model_version": "manual"
+            }
+
+            # Use the new repository method
+            created_rule = await self.repository.create_single_rule(rule_record)
+            
+            if created_rule and created_rule.get('id'):
+                # Update total_rules_count in file record
+                await self.repository.increment_rule_count(UUID(rule_data.rule_file_id))
+                return created_rule['id'] # Return the new ID
+            else:
+                raise Exception("Failed to insert rule record or get ID back")
+
+        except Exception as e:
+            print(f"[RuleService] Error creating single rule: {str(e)}")
+            raise Exception(f"Failed to create single rule: {str(e)}")
+
     async def get_rule_file_details(self, file_id: str) -> Optional[Dict[str, Any]]:
         """
         Get detailed information about a rule file
@@ -373,6 +419,23 @@ class RuleService:
         except Exception as e:
             print(f"[RuleService] Error deleting rule: {str(e)}")
             raise Exception(f"Failed to delete rule: {str(e)}")
+
+    async def archive_rule_file(self, file_id: str) -> bool:
+        """
+        Archive a rule file (soft delete)
+
+        Args:
+            file_id: UUID string of the rule file
+
+        Returns:
+            bool: True if successful
+        """
+        print(f"[RuleService] Archiving rule file: {file_id}")
+        try:
+            return await self.repository.archive_rule_file(UUID(file_id))
+        except Exception as e:
+            print(f"[RuleService] Error archiving rule file: {str(e)}")
+            raise Exception(f"Failed to archive rule file: {str(e)}")
 
     async def export_rules_to_excel(self, file_id: str) -> bytes:
         """

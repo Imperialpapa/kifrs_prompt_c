@@ -23,12 +23,14 @@ from pydantic import BaseModel
 
 from models import (
     ValidationResponse,
+    ValidationError,
     AIInterpretationResponse,
     RuleConflict,
     ValidationErrorGroup,
     RuleFileUpload,
     RuleFileResponse,
     RuleUpdate,
+    RuleCreate,
     RuleDetail,
     FalsePositiveFeedback,
     BatchFixRequest,
@@ -524,6 +526,53 @@ async def download_rule_file(file_id: str):
         )
 
 
+@app.delete("/rules/files/{file_id}")
+async def archive_rule_file(file_id: str):
+    """
+    규칙 파일 아카이브 (소프트 삭제)
+
+    Args:
+        file_id: 규칙 파일 UUID
+
+    Returns:
+        Dict: 삭제 결과
+    """
+    try:
+        print(f"[API] Archiving rule file: {file_id}")
+
+        # Use rule_service to archive the file
+        success = await rule_service.archive_rule_file(file_id)
+
+        if not success:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "Rule file not found or could not be archived",
+                    "file_id": file_id
+                }
+            )
+
+        return {
+            "status": "success",
+            "message": "규칙 파일이 성공적으로 삭제되었습니다.",
+            "file_id": file_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] Error archiving rule file: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to archive rule file",
+                "message": str(e),
+                "file_id": file_id
+            }
+        )
+
+
 @app.post("/rules/interpret/{file_id}")
 async def interpret_rules(
     file_id: str,
@@ -612,6 +661,18 @@ async def reinterpret_rules_from_original(
                 "file_id": file_id
             }
         )
+
+
+@app.post("/rules/", status_code=201)
+async def create_rule(rule: RuleCreate):
+    """
+    개별 규칙 수동 생성
+    """
+    try:
+        result = await rule_service.create_single_rule(rule)
+        return {"status": "success", "message": "Rule created successfully", "id": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/rules/{rule_id}", response_model=RuleDetail)
@@ -779,6 +840,29 @@ async def get_dashboard_statistics():
         raise HTTPException(
             status_code=500,
             detail={"error": str(e)}
+        )
+
+
+@app.post("/errors/explain")
+async def explain_error(
+    error: ValidationError,
+    ai_provider: str = Form("openai", description="AI Provider (openai, anthropic, gemini)")
+):
+    """
+    단일 검증 오류에 대한 AI의 상세 설명 및 조치 권고를 받습니다.
+    """
+    try:
+        explanation = await ai_interpreter.get_error_explanation(error, provider=ai_provider)
+        return explanation
+    except Exception as e:
+        print(f"[API] Error getting explanation: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to get error explanation",
+                "message": str(e)
+            }
         )
 
 

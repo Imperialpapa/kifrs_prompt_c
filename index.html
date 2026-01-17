@@ -206,7 +206,7 @@
                 <i class="ph ph-list text-2xl"></i>
             </button>
             
-            <h1 class="text-lg font-semibold text-slate-800" x-text="navItems.find(i => i.id === currentTab).label"></h1>
+            <h1 class="text-lg font-semibold text-slate-800" x-text="navItems.find(i => i.id === currentTab)?.label || '상세 정보'"></h1>
 
             <div class="flex items-center gap-4">
                 <button class="p-2 text-slate-400 hover:text-slate-600 transition-colors">
@@ -318,15 +318,6 @@
                                                 <span x-text="results.metadata.matching_stats.matched_sheets"></span> / 
                                                 <span x-text="results.metadata.matching_stats.total_rule_sheets"></span> 시트 매칭됨
                                             </span>
-                                            
-                                            <!-- DEBUG CODE: REMOVE LATER (사용자 요청에 의한 디버깅 정보 표시) -->
-                                            <span class="ml-3 text-red-600 font-bold text-xs bg-red-100 px-2 py-0.5 rounded border border-red-200 shadow-sm"
-                                                  title="읽은 행 수 / 파일상 Max Row / 생성된 규칙 수">
-                                                [DEBUG] 읽은행: <span x-text="results.metadata.matching_stats.total_raw_rows"></span> / 
-                                                MaxRow: <span x-text="results.metadata.matching_stats.reported_max_row"></span> /
-                                                규칙: <span x-text="results.metadata.matching_stats.total_rules_count"></span>
-                                            </span>
-                                            <!-- END DEBUG CODE -->
                                         </h4>
                                         <p class="text-sm opacity-90">
                                             규칙 파일에 정의된 시트 중 
@@ -340,7 +331,7 @@
                                 <div class="flex gap-2">
                                     <div class="relative group">
                                         <select class="appearance-none bg-white border border-slate-300 text-slate-700 py-1.5 pl-3 pr-8 rounded-lg text-xs font-medium focus:outline-none focus:ring-2 focus:ring-primary-500 cursor-pointer w-48">
-                                            <option disabled selected x-text="'규칙(B) 시트 목록 (' + results.metadata.matching_stats.all_rule_sheets.length + '개 시트 / 총 ' + results.metadata.matching_stats.total_raw_rows + '행 / ' + results.metadata.matching_stats.total_rules_count + '규칙)'"></option>
+                                            <option disabled selected x-text="'규칙(B) 시트 목록 (' + results.metadata.matching_stats.all_rule_sheets.length + ')'"></option>
                                             <template x-for="sheet in results.metadata.matching_stats.all_rule_sheets" :key="sheet">
                                                 <option x-text="sheet"></option>
                                             </template>
@@ -374,6 +365,21 @@
                         </div>
                     </template>
 
+                    <!-- K-IFRS Summary Banner -->
+                    <template x-if="kifrsSummaryErrors.length > 0">
+                        <div class="rounded-lg p-4 border bg-amber-50 border-amber-200 text-amber-900">
+                            <h4 class="font-bold text-sm mb-2 flex items-center gap-2">
+                                <i class="ph-fill ph-info text-amber-600"></i>
+                                K-IFRS 종합 분석 결과
+                            </h4>
+                            <ul class="space-y-2 text-sm list-disc list-inside pl-1">
+                                <template x-for="err in kifrsSummaryErrors" :key="err.id || Math.random()">
+                                    <li x-text="err.message"></li>
+                                </template>
+                            </ul>
+                        </div>
+                    </template>
+
                     <!-- Stat Cards -->
                     <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
                         <div class="bg-white p-6 rounded-xl border border-slate-100 shadow-sm">
@@ -396,12 +402,28 @@
                         </div>
                     </div>
 
+                    <!-- Chart Section (Global) -->
+                    <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-6">
+                        <div class="flex items-center justify-between mb-4">
+                            <h4 class="font-semibold text-slate-800 flex items-center gap-2">
+                                <i class="ph-fill ph-chart-bar text-primary-500"></i>
+                                전체 시트별 오류 분포
+                            </h4>
+                            <span class="text-xs text-slate-400">모든 시트의 오류 발생 현황을 보여줍니다</span>
+                        </div>
+                        <div class="h-64">
+                            <canvas id="sheetChart"></canvas>
+                        </div>
+                    </div>
+
                     <!-- Detailed Analysis Section with Tabs -->
                     <div class="space-y-4" x-show="selectedSheet">
-                        <h3 class="font-semibold text-slate-800 flex items-center gap-2">
-                            <i class="ph-fill ph-list-magnifying-glass text-primary-600"></i>
-                            상세 분석
-                        </h3>
+                        <div class="flex items-center justify-between">
+                            <h3 class="font-semibold text-slate-800 flex items-center gap-2">
+                                <i class="ph-fill ph-list-magnifying-glass text-primary-600"></i>
+                                시트별 상세 분석
+                            </h3>
+                        </div>
 
                         <!-- Sheet Tabs -->
                         <div class="flex gap-2 overflow-x-auto pb-2 custom-scrollbar">
@@ -423,59 +445,39 @@
                         </div>
 
                         <!-- Sheet Content Area -->
-                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                             
-                            <!-- Left Column: Stats, Rules & Chart -->
-                            <div class="lg:col-span-2 space-y-6">
+                            <!-- Left Column: Stats & Summary -->
+                            <div class="space-y-6">
                                 <!-- Sheet Summary Card -->
-                                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5" x-data="{ summary: getSelectedSheetSummary() }">
-                                    <div class="flex items-center justify-between mb-4">
+                                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5 h-full" x-data="{ summary: getSelectedSheetSummary() }">
+                                    <div class="flex items-center justify-between mb-6">
                                         <h4 class="font-bold text-slate-800 text-lg flex items-center gap-2">
                                             <i class="ph-fill ph-table text-slate-400"></i>
                                             <span x-text="selectedSheet"></span>
                                         </h4>
-                                        <div class="flex gap-3 text-sm">
-                                            <div class="flex items-center gap-1.5">
-                                                <div class="w-2 h-2 rounded-full bg-slate-300"></div>
-                                                <span class="text-slate-500">전체: </span>
-                                                <span class="font-bold text-slate-700" x-text="summary?.total_rows.toLocaleString()"></span>
-                                            </div>
-                                            <div class="flex items-center gap-1.5">
-                                                <div class="w-2 h-2 rounded-full" :class="summary?.error_rows > 0 ? 'bg-red-500' : 'bg-green-500'"></div>
-                                                <span class="text-slate-500">오류: </span>
-                                                <span class="font-bold" :class="summary?.error_rows > 0 ? 'text-red-600' : 'text-green-600'" x-text="summary?.error_rows.toLocaleString()"></span>
-                                            </div>
+                                    </div>
+                                    
+                                    <div class="grid grid-cols-2 gap-4">
+                                        <div class="bg-slate-50 rounded-lg p-4 border border-slate-100">
+                                            <div class="text-slate-500 text-xs font-medium mb-1">전체 데이터</div>
+                                            <div class="text-2xl font-bold text-slate-700" x-text="summary?.total_rows.toLocaleString()"></div>
+                                        </div>
+                                        <div class="bg-red-50 rounded-lg p-4 border border-red-100">
+                                            <div class="text-red-600 text-xs font-medium mb-1">오류 데이터</div>
+                                            <div class="text-2xl font-bold text-red-600" x-text="summary?.error_rows.toLocaleString()"></div>
                                         </div>
                                     </div>
-
-                                    <!-- Rules List -->
-                                    <div class="bg-slate-50 rounded-lg border border-slate-200 p-3">
-                                        <div class="text-xs font-semibold text-slate-500 mb-2 flex justify-between">
-                                            <span>적용된 검증 규칙</span>
-                                            <span class="bg-white border border-slate-200 px-1.5 rounded text-slate-600" x-text="getRulesForSheet(selectedSheet).length + '개'"></span>
+                                    
+                                    <div class="mt-6 pt-6 border-t border-slate-100">
+                                        <div class="flex justify-between items-center text-sm text-slate-600">
+                                            <span>오류율</span>
+                                            <span class="font-bold" x-text="summary?.total_rows > 0 ? Math.round((summary.error_rows / summary.total_rows) * 100) + '%' : '0%'"></span>
                                         </div>
-                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-40 overflow-y-auto custom-scrollbar pr-1">
-                                            <template x-for="rule in getRulesForSheet(selectedSheet)" :key="rule.rule_id">
-                                                <div class="text-xs bg-white border border-slate-100 rounded p-2 flex items-start gap-2 hover:border-primary-300 transition-colors">
-                                                    <i class="ph-fill ph-check-circle text-primary-500 mt-0.5 shrink-0"></i>
-                                                    <div class="min-w-0">
-                                                        <div class="font-bold text-slate-700 truncate" x-text="rule.field_name"></div>
-                                                        <div class="text-slate-500 leading-tight truncate" x-text="rule.ai_interpretation_summary || rule.rule_type"></div>
-                                                    </div>
-                                                </div>
-                                            </template>
-                                            <div x-show="getRulesForSheet(selectedSheet).length === 0" class="col-span-full text-center py-4 text-slate-400 italic text-sm">
-                                                적용된 규칙이 없습니다.
-                                            </div>
+                                        <div class="w-full bg-slate-100 rounded-full h-2.5 mt-2 overflow-hidden">
+                                            <div class="bg-red-500 h-2.5 rounded-full transition-all duration-500" 
+                                                 :style="'width: ' + (summary?.total_rows > 0 ? (summary.error_rows / summary.total_rows) * 100 : 0) + '%'"></div>
                                         </div>
-                                    </div>
-                                </div>
-
-                                <!-- Chart Card -->
-                                <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-                                    <h4 class="font-semibold text-slate-800 mb-4 text-sm">시트별 오류 분포</h4>
-                                    <div class="h-64">
-                                        <canvas id="sheetChart"></canvas>
                                     </div>
                                 </div>
                             </div>
@@ -516,7 +518,7 @@
                     </div>
 
                     <!-- Error Fix Section with Tabs (오류 항목 수정하기) -->
-                    <template x-if="results?.summary?.error_rows > 0">
+                    <template x-if="results?.summary?.error_rows > 0 && hasFixableItems()">
                         <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
                             <!-- Section Header -->
                             <div class="flex items-center justify-between p-4 border-b border-slate-200 bg-slate-50">
@@ -770,7 +772,7 @@
                         </div>
 
                         <div class="flex items-center gap-2">
-                            <button @click="openSmartFixModal" class="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm text-sm">
+                            <button @click="openSmartFixTab" class="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm text-sm">
                                 <i class="ph-fill ph-magic-wand"></i>
                                 <span>AI 수정 제안</span>
                             </button>
@@ -798,10 +800,15 @@
                                         <tr class="hover:bg-slate-50 transition-colors">
                                             <td class="px-6 py-4 whitespace-nowrap">
                                                 <div class="font-medium text-slate-900" x-text="error.sheet"></div>
-                                                <div class="text-xs text-slate-500" x-text="'Row ' + error.row"></div>
+                                                <div class="text-xs text-slate-500" x-text="error.row > 0 ? 'Row ' + error.row : '요약'"></div>
                                             </td>
                                             <td class="px-6 py-4 font-medium text-slate-700" x-text="error.column"></td>
-                                            <td class="px-6 py-4 text-slate-600" x-text="error.message"></td>
+                                            <td class="px-6 py-4 text-slate-600">
+                                                <div class="flex items-center gap-2">
+                                                    <span x-text="error.message"></span>
+                                                    <span x-show="error.rule_id && error.rule_id.startsWith('KIFRS_')" class="px-1.5 py-0.5 text-[10px] font-bold text-sky-700 bg-sky-100 border border-sky-200 rounded">K-IFRS</span>
+                                                </div>
+                                            </td>
                                             <td class="px-6 py-4">
                                                 <div class="flex items-center gap-2">
                                                     <span class="px-2 py-1 bg-red-50 text-red-600 rounded text-xs font-mono" x-text="error.actual_value"></span>
@@ -811,7 +818,10 @@
                                             </td>
                                             <td class="px-6 py-4">
                                                 <div class="flex items-center gap-3">
-                                                    <span class="text-[10px] text-slate-400 font-mono" x-text="error.rule_id"></span>
+                                                    <button @click="getAIExplanation(error)" class="flex items-center gap-1 px-2 py-1 bg-indigo-50 text-indigo-600 rounded-md hover:bg-indigo-100 transition-colors text-xs font-semibold">
+                                                        <i class="ph-fill ph-magic-wand"></i>
+                                                        <span>AI 분석</span>
+                                                    </button>
                                                     <button x-show="error.id" @click="openFeedbackModal(error)" class="text-slate-400 hover:text-orange-500 transition-colors" title="오류 신고">
                                                         <i class="ph ph-flag"></i>
                                                     </button>
@@ -914,6 +924,44 @@
                                 <button @click="feedbackModalOpen = false" class="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">취소</button>
                                 <button @click="submitFeedback" class="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors">신고하기</button>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI Explanation Modal -->
+                <div x-show="aiExplanationModalOpen" x-cloak class="fixed inset-0 bg-black/50 z-[90] flex items-center justify-center p-4">
+                    <div class="bg-white rounded-xl shadow-xl max-w-2xl w-full" @click.stop>
+                        <div class="p-6 border-b border-slate-100">
+                            <h3 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+                                <i class="ph-fill ph-brain text-indigo-500"></i>
+                                <span x-text="currentExplanation.title"></span>
+                            </h3>
+                        </div>
+                        <div class="p-6 space-y-5 max-h-[60vh] overflow-y-auto">
+                            <div x-show="isExplanationLoading" class="flex items-center justify-center py-10">
+                                <i class="ph-bold ph-spinner animate-spin text-3xl text-indigo-500"></i>
+                            </div>
+                            <div x-show="!isExplanationLoading" class="space-y-5">
+                                <div>
+                                    <h4 class="font-semibold text-slate-700 mb-2 flex items-center gap-1.5">
+                                        <i class="ph-fill ph-question text-slate-400"></i>
+                                        오류 설명
+                                    </h4>
+                                    <p class="text-slate-600 leading-relaxed bg-slate-50 p-4 rounded-lg border border-slate-200" x-text="currentExplanation.explanation"></p>
+                                </div>
+                                <div>
+                                    <h4 class="font-semibold text-slate-700 mb-2 flex items-center gap-1.5">
+                                        <i class="ph-fill ph-wrench text-slate-400"></i>
+                                        권장 조치
+                                    </h4>
+                                    <p class="text-slate-600 leading-relaxed bg-slate-50 p-4 rounded-lg border border-slate-200" x-text="currentExplanation.recommendation"></p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="bg-slate-50 p-4 flex justify-end">
+                            <button @click="aiExplanationModalOpen = false" class="px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-900 transition-colors text-sm font-medium">
+                                닫기
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -1039,6 +1087,12 @@
                                                     class="px-3 py-2 text-sm bg-primary-100 hover:bg-primary-200 text-primary-700 rounded-lg transition-colors flex items-center gap-1">
                                                 <i class="ph ph-download-simple"></i>
                                                 <span>다운로드</span>
+                                            </button>
+                                            <button @click="archiveRuleFile(file.id)"
+                                                    class="px-3 py-2 text-sm bg-red-50 hover:bg-red-100 text-red-600 rounded-lg transition-colors flex items-center gap-1"
+                                                    title="규칙 파일 삭제">
+                                                <i class="ph ph-trash"></i>
+                                                <span>삭제</span>
                                             </button>
                                         </div>
                                     </div>
@@ -1166,210 +1220,347 @@
                 </div>
                 </template>
 
-                <!-- Smart Fix Modal -->
-                <div x-show="fixModalOpen" x-cloak class="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4">
-                    <div class="bg-white rounded-xl shadow-xl max-w-4xl w-full h-[80vh] flex flex-col" @click.stop>
-                        
-                        <!-- Header -->
-                        <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-                            <div>
-                                <h3 class="text-xl font-bold text-slate-900 flex items-center gap-2">
-                                    <i class="ph-fill ph-magic-wand text-indigo-500"></i>
-                                    AI 스마트 수정 어시스턴트
-                                </h3>
-                                <p class="text-sm text-slate-500 mt-1">AI가 분석한 수정 제안을 검토하고 일괄 적용하세요.</p>
-                            </div>
-                            <button @click="fixModalOpen = false" class="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-50">
+                <!-- Create Rule Modal -->
+                <div x-show="createRuleModalOpen" x-cloak class="fixed inset-0 bg-black/50 z-[65] flex items-center justify-center p-4" @click.self="createRuleModalOpen = false">
+                    <div class="bg-white rounded-xl shadow-xl max-w-lg w-full p-6" @click.stop>
+                        <div class="flex items-center justify-between mb-6">
+                            <h3 class="text-xl font-bold text-slate-900 flex items-center gap-2">
+                                <i class="ph-fill ph-plus-circle text-green-600"></i>
+                                새 규칙 추가
+                            </h3>
+                            <button @click="createRuleModalOpen = false" class="text-slate-400 hover:text-slate-600">
                                 <i class="ph ph-x text-xl"></i>
                             </button>
                         </div>
 
-                        <!-- Body -->
-                        <div class="flex-1 overflow-hidden flex flex-col">
-                            
-                            <!-- Loading State -->
-                            <div x-show="isFixLoading" class="flex-1 flex flex-col items-center justify-center space-y-4">
-                                <div class="relative w-20 h-20">
-                                    <div class="absolute inset-0 border-4 border-slate-100 rounded-full"></div>
-                                    <div class="absolute inset-0 border-4 border-indigo-500 rounded-full border-t-transparent animate-spin"></div>
-                                    <i class="ph-fill ph-brain absolute inset-0 m-auto text-2xl text-indigo-500 flex items-center justify-center animate-pulse"></i>
+                        <div class="space-y-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-slate-700 mb-1">시트명 <span class="text-red-500">*</span></label>
+                                    <select x-model="newRule.sheet_name"
+                                            class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 bg-white">
+                                        <option value="">시트 선택...</option>
+                                        <template x-for="sheet in ruleFileDetails?.sheets" :key="sheet.sheet_name">
+                                            <option :value="sheet.sheet_name" x-text="sheet.sheet_name"></option>
+                                        </template>
+                                        <option value="__new__">+ 새 시트 추가</option>
+                                    </select>
+                                    <input x-show="newRule.sheet_name === '__new__'"
+                                           type="text"
+                                           x-model="newRule.custom_sheet_name"
+                                           class="w-full mt-2 px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+                                           placeholder="새 시트명 입력">
                                 </div>
-                                <div class="text-center">
-                                    <h4 class="text-lg font-semibold text-slate-800">AI가 오류를 분석 중입니다...</h4>
-                                    <p class="text-sm text-slate-500">과거 수정 패턴과 규칙을 대조하고 있습니다.</p>
+                                <div>
+                                    <label class="block text-sm font-medium text-slate-700 mb-1">컬럼명 (필드명) <span class="text-red-500">*</span></label>
+                                    <input type="text" x-model="newRule.column_name" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500" placeholder="예: 성명">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-slate-700 mb-1">규칙 설명 (자연어)</label>
+                                <textarea x-model="newRule.rule_text" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 h-24" placeholder="예: 이름은 필수이며 공백이 없어야 함"></textarea>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-slate-700 mb-1">조건 (선택사항)</label>
+                                <input type="text" x-model="newRule.condition" class="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500" placeholder="Excel 수식 등">
+                            </div>
+
+                            <div class="p-4 border border-green-100 bg-green-50/30 rounded-lg space-y-3">
+                                <div class="flex items-center gap-2 text-green-700 text-sm font-bold mb-1">
+                                    <i class="ph-fill ph-magic-wand"></i>
+                                    AI 검증 설정
+                                </div>
+                                
+                                <div>
+                                    <label class="block text-xs font-medium text-slate-500 mb-1">검증 유형</label>
+                                    <select x-model="newRule.ai_rule_type" class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded bg-white">
+                                        <option value="required">필수 입력 (required)</option>
+                                        <option value="format">형식 검증 (format)</option>
+                                        <option value="range">범위 검증 (range)</option>
+                                        <option value="no_duplicates">중복 제거 (no_duplicates)</option>
+                                        <option value="date_logic">날짜 로직 (date_logic)</option>
+                                        <option value="cross_field">교차 필드 (cross_field)</option>
+                                        <option value="custom">사용자 정의 / 기타 (custom)</option>
+                                    </select>
+                                    <p class="text-[10px] text-slate-400 mt-1">
+                                        * '사용자 정의' 선택 시 AI가 자연어를 해석하여 처리합니다.
+                                    </p>
                                 </div>
                             </div>
 
-                            <!-- Content State -->
-                            <div x-show="!isFixLoading" class="flex-1 flex flex-col overflow-hidden">
-                                <!-- Toolbar -->
-                                <div class="px-6 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-                                    <div class="flex items-center gap-4">
-                                        <label class="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
-                                            <input type="checkbox" class="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500" 
-                                                   :checked="selectedFixes.length === fixSuggestions.length && fixSuggestions.length > 0"
-                                                   @change="toggleAllFixes">
-                                            전체 선택 (<span x-text="selectedFixes.length"></span>)
-                                        </label>
-                                        <div class="h-4 w-px bg-slate-300"></div>
-                                        <div class="flex gap-2">
-                                            <button @click="filterConfidence(0.9)" class="text-xs px-2 py-1 rounded bg-white border border-slate-200 hover:border-indigo-300 hover:text-indigo-600 transition-colors">
-                                                신뢰도 90% 이상만
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <div class="text-xs text-slate-500">
-                                        총 <span class="font-bold text-slate-800" x-text="fixSuggestions.length"></span>건의 제안
-                                    </div>
-                                </div>
-
-                                <!-- Table -->
-                                <div class="flex-1 overflow-y-auto">
-                                    <table class="w-full text-sm text-left">
-                                        <thead class="bg-white text-slate-500 font-medium sticky top-0 z-10 shadow-sm">
-                                            <tr>
-                                                <th class="px-6 py-3 w-12"></th>
-                                                <th class="px-6 py-3">위치</th>
-                                                <th class="px-6 py-3">현재 값 (오류)</th>
-                                                <th class="px-6 py-3">
-                                                    <div class="flex items-center gap-1">
-                                                        수정 제안
-                                                        <i class="ph-fill ph-arrow-right text-indigo-500"></i>
-                                                    </div>
-                                                </th>
-                                                <th class="px-6 py-3">근거 / 신뢰도</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody class="divide-y divide-slate-100 bg-white">
-                                            <template x-for="(fix, index) in fixSuggestions" :key="index">
-                                                <tr class="hover:bg-indigo-50/30 transition-colors" :class="{'bg-indigo-50/50': selectedFixes.includes(index)}">
-                                                    <td class="px-6 py-4">
-                                                        <input type="checkbox" :value="index" x-model="selectedFixes" class="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer">
-                                                    </td>
-                                                    <td class="px-6 py-4">
-                                                        <div class="font-medium text-slate-900" x-text="fix.sheet_name"></div>
-                                                        <div class="text-xs text-slate-500 font-mono" x-text="fix.column + ' (Row ' + fix.row + ')'"></div>
-                                                    </td>
-                                                    <td class="px-6 py-4">
-                                                        <span class="px-2 py-1 bg-red-50 text-red-600 rounded text-xs font-mono line-through decoration-red-300" x-text="fix.original_value"></span>
-                                                    </td>
-                                                    <td class="px-6 py-4">
-                                                        <input type="text" x-model="fix.fixed_value" 
-                                                               class="w-full px-2 py-1 text-sm border-b-2 border-slate-200 focus:border-indigo-500 focus:outline-none bg-transparent font-medium text-indigo-700 font-mono">
-                                                    </td>
-                                                    <td class="px-6 py-4">
-                                                        <div class="space-y-1">
-                                                            <div class="text-xs text-slate-600" x-text="fix.reason"></div>
-                                                            <div class="flex items-center gap-2">
-                                                                <div class="h-1.5 w-16 bg-slate-100 rounded-full overflow-hidden">
-                                                                    <div class="h-full rounded-full" 
-                                                                         :class="getConfidenceColor(fix.confidence_score)"
-                                                                         :style="'width: ' + (fix.confidence_score * 100) + '%'"></div>
-                                                                </div>
-                                                                <span class="text-[10px] font-bold" x-text="Math.round(fix.confidence_score * 100) + '%'"></span>
-                                                            </div>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            </template>
-                                            <tr x-show="fixSuggestions.length === 0">
-                                                <td colspan="5" class="px-6 py-12 text-center text-slate-500">
-                                                    수정 가능한 항목이 없습니다.
-                                                </td>
-                                            </tr>
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Footer -->
-                        <div class="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-between items-center">
-                            <span class="text-sm text-slate-500">
-                                <i class="ph-fill ph-check-circle text-indigo-500"></i>
-                                <span class="font-bold text-slate-800" x-text="selectedFixes.length"></span>건 선택됨
-                            </span>
-                            <div class="flex gap-3">
-                                <button @click="fixModalOpen = false" class="px-4 py-2 text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">취소</button>
-                                <button @click="applySmartFixes" 
-                                        class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-bold shadow-md shadow-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                                        :disabled="selectedFixes.length === 0">
-                                    <i class="ph-bold ph-download-simple"></i>
-                                    적용하여 다운로드
+                            <div class="flex gap-3 justify-end pt-4 border-t border-slate-100">
+                                <button @click="createRuleModalOpen = false" class="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">취소</button>
+                                <button @click="createRule" class="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-bold shadow-lg shadow-green-200"
+                                        :disabled="(!newRule.sheet_name || (newRule.sheet_name === '__new__' && !newRule.custom_sheet_name)) || !newRule.column_name || !newRule.rule_text">
+                                    추가하기
                                 </button>
                             </div>
                         </div>
                     </div>
                 </div>
+            </div>
 
-                <!-- Rule File Details Modal -->
-                <div x-show="ruleFileDetails" x-cloak class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" @click.self="closeRuleFileDetails">
-                    <div class="bg-white rounded-xl shadow-xl max-w-4xl w-full max-h-[80vh] overflow-hidden" @click.stop>
-                        <div class="bg-primary-600 text-white p-6 flex items-center justify-between">
-                            <div>
-                                <h2 class="text-2xl font-bold" x-text="ruleFileDetails?.file_name"></h2>
-                                <p class="text-primary-100 text-sm" x-text="'파일 ID: ' + ruleFileDetails?.id"></p>
+            <!-- VIEW: AI FIX -->
+            <div x-show="currentTab === 'ai_fix'" x-cloak>
+                <div class="max-w-6xl mx-auto space-y-6">
+                    
+                    <!-- Header -->
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <h2 class="text-2xl font-bold text-slate-900 flex items-center gap-2">
+                                <i class="ph-fill ph-magic-wand text-indigo-500"></i>
+                                AI 스마트 수정 어시스턴트
+                            </h2>
+                            <p class="text-slate-500 mt-1">AI가 분석한 수정 제안을 검토하고 일괄 적용하세요.</p>
+                        </div>
+                    </div>
+
+                    <!-- Main Content Card -->
+                    <div class="bg-white rounded-xl border border-slate-200 shadow-sm flex flex-col h-[calc(100vh-200px)]">
+                        
+                        <!-- Loading State -->
+                        <div x-show="isFixLoading" class="flex-1 flex flex-col items-center justify-center space-y-4">
+                            <div class="relative w-20 h-20">
+                                <div class="absolute inset-0 border-4 border-slate-100 rounded-full"></div>
+                                <div class="absolute inset-0 border-4 border-indigo-500 rounded-full border-t-transparent animate-spin"></div>
+                                <i class="ph-fill ph-brain absolute inset-0 m-auto text-2xl text-indigo-500 flex items-center justify-center animate-pulse"></i>
                             </div>
-                            <button @click="closeRuleFileDetails" class="p-2 hover:bg-primary-700 rounded-lg transition-colors">
-                                <i class="ph ph-x text-2xl"></i>
-                            </button>
+                            <div class="text-center">
+                                <h4 class="text-lg font-semibold text-slate-800">AI가 오류를 분석 중입니다...</h4>
+                                <p class="text-sm text-slate-500">과거 수정 패턴과 규칙을 대조하고 있습니다.</p>
+                            </div>
                         </div>
 
-                        <div class="p-6 overflow-y-auto max-h-[calc(80vh-120px)]">
-                            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                                <div class="bg-slate-50 rounded-lg p-4">
-                                    <div class="text-sm text-slate-600 mb-1">버전</div>
-                                    <div class="text-xl font-bold text-slate-900" x-text="ruleFileDetails?.file_version"></div>
+                        <!-- Empty/Initial State -->
+                        <div x-show="!isFixLoading && fixSuggestions.length === 0" class="flex-1 flex flex-col items-center justify-center space-y-4">
+                            <div class="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center text-slate-300">
+                                <i class="ph-fill ph-magic-wand text-4xl"></i>
+                            </div>
+                            <div class="text-center">
+                                <h4 class="text-lg font-semibold text-slate-800">수정 제안이 없습니다</h4>
+                                <p class="text-sm text-slate-500 mb-4">분석된 오류가 없거나 AI가 수정 가능한 항목을 찾지 못했습니다.</p>
+                                <button @click="openSmartFixTab" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm text-sm flex items-center gap-2 mx-auto">
+                                    <i class="ph-bold ph-arrows-clockwise"></i>
+                                    <span>다시 분석하기</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Content State -->
+                        <div x-show="!isFixLoading && fixSuggestions.length > 0" class="flex-1 flex flex-col overflow-hidden">
+                            <!-- Toolbar -->
+                            <div class="px-6 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                                <div class="flex items-center gap-4">
+                                    <label class="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer">
+                                        <input type="checkbox" class="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500" 
+                                               :checked="selectedFixes.length === fixSuggestions.length && fixSuggestions.length > 0"
+                                               @change="toggleAllFixes">
+                                        전체 선택 (<span x-text="selectedFixes.length"></span>)
+                                    </label>
+                                    <div class="h-4 w-px bg-slate-300"></div>
+                                    <div class="flex gap-2">
+                                        <button @click="filterConfidence(0.9)" class="text-xs px-2 py-1 rounded bg-white border border-slate-200 hover:border-indigo-300 hover:text-indigo-600 transition-colors">
+                                            신뢰도 90% 이상만
+                                        </button>
+                                    </div>
                                 </div>
-                                <div class="bg-slate-50 rounded-lg p-4">
-                                    <div class="text-sm text-slate-600 mb-1">총 규칙 수</div>
-                                    <div class="text-xl font-bold text-slate-900" x-text="ruleFileDetails?.total_rules_count"></div>
+                                <div class="text-xs text-slate-500">
+                                    총 <span class="font-bold text-slate-800" x-text="fixSuggestions.length"></span>건의 제안
                                 </div>
-                                <div class="bg-slate-50 rounded-lg p-4">
-                                    <div class="text-sm text-slate-600 mb-1">시트 수</div>
-                                    <div class="text-xl font-bold text-slate-900" x-text="ruleFileDetails?.sheet_count"></div>
-                                </div>
-                                <div class="bg-slate-50 rounded-lg p-4">
-                                    <div class="text-sm text-slate-600 mb-1">AI 해석률</div>
-                                    <div class="text-xl font-bold text-slate-900" x-text="Math.round((ruleFileDetails?.statistics?.interpretation_rate || 0) * 100) + '%'"></div>
-                                    <button x-show="(ruleFileDetails?.statistics?.interpretation_rate || 0) < 1"
-                                            @click="interpretRules(ruleFileDetails.id)"
-                                            class="mt-2 text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200 transition-colors flex items-center gap-1">
-                                        <i class="ph ph-magic-wand"></i> AI 해석 실행
+                            </div>
+
+                            <!-- Table -->
+                            <div class="flex-1 overflow-y-auto">
+                                <table class="w-full text-sm text-left">
+                                    <thead class="bg-white text-slate-500 font-medium sticky top-0 z-10 shadow-sm">
+                                        <tr>
+                                            <th class="px-6 py-3 w-12"></th>
+                                            <th class="px-6 py-3">위치</th>
+                                            <th class="px-6 py-3">현재 값 (오류)</th>
+                                            <th class="px-6 py-3">
+                                                <div class="flex items-center gap-1">
+                                                    수정 제안
+                                                    <i class="ph-fill ph-arrow-right text-indigo-500"></i>
+                                                </div>
+                                            </th>
+                                            <th class="px-6 py-3">근거 / 신뢰도</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-100 bg-white">
+                                        <template x-for="(fix, index) in fixSuggestions" :key="index">
+                                            <tr class="hover:bg-indigo-50/30 transition-colors" :class="{'bg-indigo-50/50': selectedFixes.includes(index)}">
+                                                <td class="px-6 py-4">
+                                                    <input type="checkbox" :value="index" x-model="selectedFixes" class="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer">
+                                                </td>
+                                                <td class="px-6 py-4">
+                                                    <div class="font-medium text-slate-900" x-text="fix.sheet_name"></div>
+                                                    <div class="text-xs text-slate-500 font-mono" x-text="fix.column + ' (Row ' + fix.row + ')'"></div>
+                                                </td>
+                                                <td class="px-6 py-4">
+                                                    <span class="px-2 py-1 bg-red-50 text-red-600 rounded text-xs font-mono line-through decoration-red-300" x-text="fix.original_value"></span>
+                                                </td>
+                                                <td class="px-6 py-4">
+                                                    <input type="text" x-model="fix.fixed_value" 
+                                                           class="w-full px-2 py-1 text-sm border-b-2 border-slate-200 focus:border-indigo-500 focus:outline-none bg-transparent font-medium text-indigo-700 font-mono">
+                                                </td>
+                                                <td class="px-6 py-4">
+                                                    <div class="space-y-1">
+                                                        <div class="text-xs text-slate-600" x-text="fix.reason"></div>
+                                                        <div class="flex items-center gap-2">
+                                                            <div class="h-1.5 w-16 bg-slate-100 rounded-full overflow-hidden">
+                                                                <div class="h-full rounded-full" 
+                                                                     :class="getConfidenceColor(fix.confidence_score)"
+                                                                     :style="'width: ' + (fix.confidence_score * 100) + '%'"></div>
+                                                            </div>
+                                                            <span class="text-[10px] font-bold" x-text="Math.round(fix.confidence_score * 100) + '%'"></span>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                            
+                            <!-- Footer -->
+                            <div class="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-between items-center">
+                                <span class="text-sm text-slate-500">
+                                    <i class="ph-fill ph-check-circle text-indigo-500"></i>
+                                    <span class="font-bold text-slate-800" x-text="selectedFixes.length"></span>건 선택됨
+                                </span>
+                                <div class="flex gap-3">
+                                    <button @click="applySmartFixes" 
+                                            class="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-bold shadow-md shadow-indigo-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                                            :disabled="selectedFixes.length === 0">
+                                        <i class="ph-bold ph-download-simple"></i>
+                                        적용하여 다운로드
                                     </button>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
-                            <div class="space-y-4">
-                                <h3 class="text-lg font-bold text-slate-900 flex items-center gap-2">
-                                    <i class="ph ph-stack text-primary-600"></i>
-                                    시트별 규칙
-                                </h3>
-                                <div class="space-y-3">
-                                    <template x-for="sheet in ruleFileDetails?.sheets" :key="sheet.sheet_name">
-                                        <div class="border border-slate-200 rounded-lg p-4">
-                                            <div class="flex items-center justify-between mb-3">
-                                                <h4 class="font-semibold text-slate-900" x-text="sheet.sheet_name"></h4>
-                                                <span class="px-2 py-1 bg-primary-100 text-primary-700 text-sm rounded" x-text="sheet.rule_count + ' 규칙'"></span>
-                                            </div>
-                                            <div class="space-y-2 text-sm">
-                                                <template x-for="rule in sheet.sample_rules" :key="rule.id">
-                                                    <div class="flex items-start gap-2 text-slate-600 group hover:bg-slate-50 p-1 rounded transition-colors">
-                                                        <i class="ph ph-check-circle text-green-500 mt-0.5"></i>
-                                                        <div class="flex-1 min-w-0">
-                                                            <span class="font-medium" x-text="rule.field_name"></span>
-                                                            <span class="text-slate-500" x-text="': ' + rule.rule_text"></span>
-                                                        </div>
-                                                        <button @click="startEditingRule(rule.id)" class="opacity-0 group-hover:opacity-100 p-1 text-primary-600 hover:bg-primary-50 rounded transition-all">
-                                                            <i class="ph ph-note-pencil"></i>
-                                                        </button>
-                                                    </div>
-                                                </template>
-                                            </div>
-                                        </div>
-                                    </template>
+            <!-- VIEW: RULE FILE DETAILS -->
+            <div x-show="currentTab === 'rule_detail'" x-cloak>
+                <!-- Loading State -->
+                <div x-show="!ruleFileDetails" class="flex flex-col items-center justify-center h-96">
+                    <i class="ph-bold ph-spinner animate-spin text-4xl text-primary-500 mb-4"></i>
+                    <p class="text-slate-500">규칙 상세 정보를 불러오는 중입니다...</p>
+                </div>
+
+                <!-- Content -->
+                <div class="max-w-6xl mx-auto space-y-6" x-show="ruleFileDetails">
+                    
+                    <!-- Header -->
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-4">
+                            <button @click="closeRuleFileDetails" class="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors">
+                                <i class="ph ph-arrow-left text-xl"></i>
+                            </button>
+                            <div>
+                                <h2 class="text-2xl font-bold text-slate-900" x-text="ruleFileDetails?.file_name"></h2>
+                                <div class="flex items-center gap-2 text-sm text-slate-500">
+                                    <i class="ph ph-file-text"></i>
+                                    <span x-text="'ID: ' + ruleFileDetails?.id"></span>
                                 </div>
                             </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button @click="openCreateRuleModal" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2 shadow-sm font-medium">
+                                <i class="ph ph-plus-circle text-lg"></i>
+                                <span>규칙 추가</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Statistics Cards -->
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+                            <div class="text-sm text-slate-500 mb-1">버전</div>
+                            <div class="text-2xl font-bold text-slate-800" x-text="'v' + ruleFileDetails?.file_version"></div>
+                        </div>
+                        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+                            <div class="text-sm text-slate-500 mb-1">총 규칙 수</div>
+                            <div class="text-2xl font-bold text-slate-800" x-text="ruleFileDetails?.total_rules_count"></div>
+                        </div>
+                        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+                            <div class="text-sm text-slate-500 mb-1">시트 수</div>
+                            <div class="text-2xl font-bold text-slate-800" x-text="ruleFileDetails?.sheet_count"></div>
+                        </div>
+                        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+                            <div class="text-sm text-slate-500 mb-1">AI 해석률</div>
+                            <div class="flex items-center justify-between">
+                                <div class="text-2xl font-bold text-slate-800" x-text="Math.round((ruleFileDetails?.statistics?.interpretation_rate || 0) * 100) + '%'"></div>
+                                <button x-show="(ruleFileDetails?.statistics?.interpretation_rate || 0) < 1"
+                                        @click="interpretRules(ruleFileDetails.id)"
+                                        class="text-xs bg-indigo-50 text-indigo-600 px-2 py-1 rounded hover:bg-indigo-100 transition-colors flex items-center gap-1 border border-indigo-100">
+                                    <i class="ph-fill ph-magic-wand"></i> 실행
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Rules Content -->
+                    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div class="p-4 border-b border-slate-100 bg-slate-50/50">
+                            <h3 class="font-bold text-slate-800 flex items-center gap-2">
+                                <i class="ph-fill ph-stack text-indigo-500"></i>
+                                시트별 규칙 목록
+                            </h3>
+                        </div>
+                        
+                        <div class="divide-y divide-slate-100">
+                            <template x-for="sheet in ruleFileDetails?.sheets" :key="sheet.sheet_name">
+                                <div class="p-6">
+                                    <div class="flex items-center justify-between mb-4">
+                                        <h4 class="text-lg font-bold text-slate-800 flex items-center gap-2">
+                                            <i class="ph ph-table text-slate-400"></i>
+                                            <span x-text="sheet.sheet_name"></span>
+                                        </h4>
+                                        <span class="px-2.5 py-1 bg-slate-100 text-slate-600 text-xs font-medium rounded-full" x-text="sheet.rule_count + '개 규칙'"></span>
+                                    </div>
+                                    
+                                    <div class="bg-slate-50 rounded-lg border border-slate-200 overflow-hidden">
+                                        <template x-for="rule in sheet.sample_rules" :key="rule.id">
+                                            <div class="group flex items-start gap-3 p-3 border-b border-slate-200 last:border-0 hover:bg-white transition-colors">
+                                                <div class="mt-1">
+                                                    <i class="ph-fill ph-check-circle text-green-500" x-show="rule.has_ai_interpretation"></i>
+                                                    <i class="ph-fill ph-circle text-slate-300" x-show="!rule.has_ai_interpretation"></i>
+                                                </div>
+                                                <div class="flex-1 min-w-0">
+                                                    <div class="flex items-center gap-2 mb-0.5">
+                                                        <span class="font-bold text-slate-700 text-sm" x-text="rule.field_name"></span>
+                                                        <span class="text-xs text-slate-400 font-mono" x-text="'ID: ' + rule.id.substring(0,8)"></span>
+                                                    </div>
+                                                    <div class="text-sm text-slate-600" x-text="rule.rule_text"></div>
+                                                </div>
+                                                <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                                                    <button @click="startEditingRule(rule.id)"
+                                                            class="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg"
+                                                            title="규칙 편집">
+                                                        <i class="ph-fill ph-pencil-simple text-lg"></i>
+                                                    </button>
+                                                    <button @click="deleteRule(rule.id)"
+                                                            class="p-2 text-red-500 hover:bg-red-50 rounded-lg"
+                                                            title="규칙 삭제">
+                                                        <i class="ph-fill ph-trash text-lg"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </template>
+                                        <div x-show="sheet.rule_count > sheet.sample_rules.length" class="p-2 text-center text-xs text-slate-400 bg-slate-50">
+                                            ... 외 <span x-text="sheet.rule_count - sheet.sample_rules.length"></span>개 규칙 더 있음
+                                        </div>
+                                        <div x-show="sheet.rule_count === 0" class="p-8 text-center text-slate-400">
+                                            등록된 규칙이 없습니다.
+                                        </div>
+                                    </div>
+                                </div>
+                            </template>
                         </div>
                     </div>
                 </div>
@@ -1427,9 +1618,121 @@
                 editingRule: null,
                 editingRuleParamsJson: '{}',
                 paramsValid: true,
+                
+                // Create Rule State
+                createRuleModalOpen: false,
+                newRule: {
+                    sheet_name: '',
+                    custom_sheet_name: '',
+                    column_name: '',
+                    rule_text: '',
+                    condition: '',
+                    ai_rule_type: 'required'
+                },
+
+                async createRule() {
+                    if (!this.ruleFileDetails || !this.ruleFileDetails.id) {
+                        this.showToast('규칙을 추가할 상위 규칙 파일이 선택되지 않았습니다.', 'error');
+                        return;
+                    }
+
+                    // Handle custom sheet name
+                    const actualSheetName = this.newRule.sheet_name === '__new__'
+                        ? this.newRule.custom_sheet_name
+                        : this.newRule.sheet_name;
+
+                    const payload = {
+                        ...this.newRule,
+                        sheet_name: actualSheetName,
+                        rule_file_id: this.ruleFileDetails.id,
+                        // row_number는 서버에서 처리하거나 기본값을 사용하도록 0 또는 null
+                        row_number: this.newRule.row_number || 0, 
+                        ai_parameters: {} // 기본값
+                    };
+
+                    try {
+                        const response = await fetch('http://localhost:8000/rules/', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+
+                        if (!response.ok) {
+                            const errData = await response.json();
+                            throw new Error(errData.detail || '규칙 생성에 실패했습니다.');
+                        }
+
+                        this.showToast('새로운 규칙이 성공적으로 추가되었습니다.', 'success');
+                        this.createRuleModalOpen = false;
+                        this.newRule = { sheet_name: '', column_name: '', rule_text: '', condition: '', ai_rule_type: 'required' };
+                        
+                        // 데이터 다시 로드
+                        this.viewRuleFileDetails(this.ruleFileDetails.id);
+
+                    } catch (e) {
+                        this.showToast(e.message, 'error');
+                    }
+                },
+
+                async deleteRule(ruleId) {
+                    if (!ruleId) {
+                        this.showToast('삭제할 규칙의 ID가 없습니다.', 'error');
+                        return;
+                    }
+
+                    if (!confirm('정말로 이 규칙을 영구적으로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.')) {
+                        return;
+                    }
+
+                    try {
+                        // Use permanent=true to actually delete it
+                        const response = await fetch(`http://localhost:8000/rules/${ruleId}?permanent=true`, {
+                            method: 'DELETE'
+                        });
+
+                        if (!response.ok) {
+                            const errData = await response.json();
+                            throw new Error(errData.detail || '규칙 삭제에 실패했습니다.');
+                        }
+
+                        this.showToast('규칙이 성공적으로 삭제되었습니다.', 'success');
+                        this.editingRule = null; // Close edit modal
+                        
+                        // 데이터 다시 로드
+                        this.viewRuleFileDetails(this.ruleFileDetails.id);
+
+                    } catch (e) {
+                        this.showToast(e.message, 'error');
+                    }
+                },
+
+                async archiveRuleFile(fileId) {
+                    if (!confirm('이 규칙 파일을 삭제하시겠습니까?\n\n모든 규칙이 비활성화됩니다.')) {
+                        return;
+                    }
+                    try {
+                        const response = await fetch(`http://localhost:8000/rules/files/${fileId}`, {
+                            method: 'DELETE'
+                        });
+                        if (!response.ok) {
+                            const err = await response.json();
+                            throw new Error(err.detail?.message || err.detail || '삭제 실패');
+                        }
+
+                        this.showToast('규칙 파일이 삭제되었습니다.', 'success');
+                        this.loadRuleFiles();
+
+                        // 상세 페이지가 열려있으면 닫기
+                        if (this.ruleFileDetails?.id === fileId) {
+                            this.closeRuleFileDetails();
+                        }
+                    } catch (e) {
+                        this.showToast(e.message, 'error');
+                    }
+                },
 
                 // Smart Fix State
-                fixModalOpen: false,
+                // fixModalOpen: false, // Removed in favor of tab
                 isFixLoading: false,
                 fixSuggestions: [],
                 selectedFixes: [],
@@ -1447,12 +1750,19 @@
                     { id: 'upload', label: '파일 업로드', icon: 'ph-upload-simple' },
                     { id: 'dashboard', label: '검증 대시보드', icon: 'ph-chart-pie-slice' },
                     { id: 'report', label: '상세 리포트', icon: 'ph-table' },
+                    { id: 'ai_fix', label: 'AI 스마트 수정', icon: 'ph-magic-wand' },
                     { id: 'statistics', label: '통계 분석', icon: 'ph-trend-up' },
                     { id: 'rules', label: '규칙 관리', icon: 'ph-database' },
+                    // 'rule_detail' tab is hidden from sidebar
                 ],
 
                 // Toast State
                 toasts: [],
+
+                // AI Explanation Modal State
+                aiExplanationModalOpen: false,
+                isExplanationLoading: false,
+                currentExplanation: { title: '', explanation: '', recommendation: '' },
 
                 showToast(message, type = 'info') {
                     const id = Date.now();
@@ -1521,6 +1831,50 @@
                 },
 
                 totalFiltered: 0,
+
+                // K-IFRS Summary Errors
+                get kifrsSummaryErrors() {
+                    if (!this.results || !this.results.errors) return [];
+                    return this.results.errors.filter(e => e.row === 0 && e.rule_id && e.rule_id.startsWith('KIFRS_'));
+                },
+
+                // Get AI Explanation for an error
+                async getAIExplanation(error) {
+                    this.isExplanationLoading = true;
+                    this.currentExplanation = { 
+                        title: `AI 분석: ${error.column} 오류`,
+                        explanation: 'AI가 오류를 분석하고 있습니다. 잠시만 기다려주세요...',
+                        recommendation: ''
+                    };
+                    this.aiExplanationModalOpen = true;
+
+                    try {
+                        const response = await fetch('http://localhost:8000/errors/explain', {
+                            method: 'POST',
+                            headers: { 
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json'
+                            },
+                            body: JSON.stringify(error)
+                        });
+
+                        if (!response.ok) {
+                            const errData = await response.json();
+                            throw new Error(errData.detail.message || 'AI 분석에 실패했습니다. 서버 로그를 확인하세요.');
+                        }
+
+                        const data = await response.json();
+                        this.currentExplanation.explanation = data.explanation;
+                        this.currentExplanation.recommendation = data.recommendation;
+
+                    } catch (e) {
+                        console.error(e);
+                        this.currentExplanation.explanation = '오류에 대한 AI 설명을 가져오는 데 실패했습니다.';
+                        this.currentExplanation.recommendation = e.message;
+                    } finally {
+                        this.isExplanationLoading = false;
+                    }
+                },
 
                 // Helper: Get Rule Info for Sidebar
                 getRuleInfo(ruleId) {
@@ -1666,6 +2020,12 @@
                         const group = errorGroups.find(e => e.key === key);
                         return sum + (group ? group.count : 0);
                     }, 0);
+                },
+
+                // 자동 수정 가능한 항목이 하나라도 있는지 확인
+                hasFixableItems() {
+                    const groups = this.getErrorsBySheetAndColumn();
+                    return groups.some(g => g.autoFixable);
                 },
 
                 // 시트+컬럼 키가 선택되었는지 확인
@@ -1858,7 +2218,6 @@
                         window.URL.revokeObjectURL(url);
 
                         this.showToast(`${this.selectedFixItems.length}개 항목, ${this.getSelectedFixCount()}건 수정 완료`, 'success');
-                        this.selectedFixItems = [];
 
                     } catch (error) {
                         console.error('Download error:', error);
@@ -2388,15 +2747,17 @@
                         const data = await response.json();
                         this.ruleFileDetails = data;
                         this.selectedRuleFile = fileId;
+                        this.currentTab = 'rule_detail';
                     } catch (e) {
                         console.error('Failed to load rule file details:', e);
-                        alert('파일 상세 정보 로딩 실패');
+                        alert('파일 상세 정보 로딩 실패: ' + e.message);
                     }
                 },
 
                 closeRuleFileDetails() {
                     this.ruleFileDetails = null;
                     this.selectedRuleFile = null;
+                    this.currentTab = 'rules'; // Go back to list
                 },
 
                 async downloadRuleFile(fileId, fileName) {
@@ -2490,6 +2851,59 @@
                     }
                 },
 
+                openCreateRuleModal() {
+                    this.newRule = {
+                        sheet_name: '',
+                        column_name: '',
+                        rule_text: '',
+                        condition: '',
+                        ai_rule_type: 'required'
+                    };
+                    // Try to pre-fill sheet name if available
+                    if (this.ruleFileDetails && this.ruleFileDetails.sheets && this.ruleFileDetails.sheets.length > 0) {
+                        this.newRule.sheet_name = this.ruleFileDetails.sheets[0].sheet_name;
+                    }
+                    this.createRuleModalOpen = true;
+                },
+
+                async createRule() {
+                    if (!this.selectedRuleFile) return;
+
+                    try {
+                        const payload = {
+                            rule_file_id: this.selectedRuleFile,
+                            sheet_name: this.newRule.sheet_name,
+                            column_name: this.newRule.column_name,
+                            rule_text: this.newRule.rule_text,
+                            condition: this.newRule.condition,
+                            ai_rule_type: this.newRule.ai_rule_type,
+                            row_number: 0 // Default for manual entry
+                        };
+
+                        const response = await fetch('http://localhost:8000/rules/', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+
+                        if (!response.ok) {
+                            const error = await response.json();
+                            throw new Error(error.detail || '규칙 생성 실패');
+                        }
+
+                        this.showToast('새 규칙이 추가되었습니다.', 'success');
+                        this.createRuleModalOpen = false;
+                        
+                        // Refresh details
+                        this.viewRuleFileDetails(this.selectedRuleFile);
+                        // Refresh list (rule count updated)
+                        this.loadRuleFiles();
+
+                    } catch (e) {
+                        alert('오류: ' + e.message);
+                    }
+                },
+
                 // =================================================================
                 // Rule Editor Logic
                 // =================================================================
@@ -2556,24 +2970,41 @@
                 },
 
                 async deleteRule(ruleId) {
-                    if (!confirm('이 규칙을 정말로 삭제하시겠습니까?')) return;
-
+                    if (!confirm('정말로 이 규칙을 비활성화하시겠습니까? (DB에서 영구 삭제되지 않습니다)')) {
+                        return;
+                    }
                     try {
-                        const response = await fetch(`http://localhost:8000/rules/${ruleId}?permanent=true`, {
+                        const response = await fetch(`http://localhost:8000/rules/${ruleId}`, {
                             method: 'DELETE'
                         });
-
-                        if (!response.ok) throw new Error('삭제 실패');
-
-                        this.showToast('규칙이 삭제되었습니다.', 'success');
-                        this.editingRule = null;
-
-                        // Refresh details
-                        if (this.selectedRuleFile) {
-                            this.viewRuleFileDetails(this.selectedRuleFile);
+                        if (!response.ok) {
+                            const err = await response.json();
+                            throw new Error(err.detail || '규칙 비활성화에 실패했습니다.');
                         }
+
+                        this.showToast('규칙이 성공적으로 비활성화되었습니다.', 'success');
+                        
+                        // --- START NEW LOGIC for immediate UI update ---
+                        if (this.ruleFileDetails && this.ruleFileDetails.sheets) {
+                            this.ruleFileDetails.sheets.forEach(sheet => {
+                                const index = sheet.sample_rules.findIndex(r => r.id === ruleId);
+                                if (index > -1) {
+                                    sheet.sample_rules.splice(index, 1);
+                                    sheet.rule_count--; // Decrement rule count for the sheet
+                                }
+                            });
+                            // Also decrement the total count
+                            if (this.ruleFileDetails.total_rules_count) {
+                                this.ruleFileDetails.total_rules_count--;
+                            }
+                        }
+                        // --- END NEW LOGIC ---
+
+                        this.editingRule = null; // Close the edit modal
+
                     } catch (e) {
-                        alert('오류: ' + e.message);
+                        this.showToast(e.message, 'error');
+                        console.error(e);
                     }
                 },
 
@@ -2581,13 +3012,15 @@
                 // Smart Fix Functions
                 // =================================================================
 
-                async openSmartFixModal() {
+                async openSmartFixTab() {
                     if (!this.results || !this.results.errors || this.results.errors.length === 0) {
                         alert('수정할 오류가 없습니다.');
                         return;
                     }
 
-                    this.fixModalOpen = true;
+                    // Switch to tab
+                    this.currentTab = 'ai_fix';
+                    
                     this.isFixLoading = true;
                     this.fixSuggestions = [];
                     this.selectedFixes = [];
@@ -2600,7 +3033,7 @@
                             // Legacy validation without session - show placeholder message
                             this.isFixLoading = false;
                             alert('AI 수정 제안은 DB 규칙으로 검증한 결과에서만 사용할 수 있습니다.\n\n상단의 "규칙 관리" 탭에서 규칙을 DB에 업로드한 후, "파일 업로드" 탭에서 "저장된 규칙 사용"을 선택하여 검증해주세요.');
-                            this.fixModalOpen = false;
+                            this.currentTab = 'dashboard'; // Return to dashboard
                             return;
                         }
 
@@ -2637,7 +3070,8 @@
                         this.isFixLoading = false;
 
                         if (this.fixSuggestions.length === 0) {
-                            alert('AI가 수정 제안을 생성할 수 없었습니다.\n\n참고: 중복 오류나 논리 오류는 자동 수정이 불가능합니다.\n수동으로 데이터를 확인해주세요.');
+                            // Stay on tab but show empty state
+                            // alert('AI가 수정 제안을 생성할 수 없었습니다...'); // Alert removed as UI handles empty state
                         }
                     } catch (e) {
                         console.error('Fix suggestion error:', e);
@@ -2715,7 +3149,7 @@
                         window.URL.revokeObjectURL(url);
 
                         this.showToast('수정된 파일이 다운로드되었습니다.', 'success');
-                        this.fixModalOpen = false;
+                        // this.fixModalOpen = false; // Stay on tab
                     } catch (e) {
                         console.error('Apply fixes error:', e);
                         alert('오류: ' + e.message);
