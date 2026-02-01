@@ -370,10 +370,228 @@ class AIRuleInterpreter:
     # 💻 Local Rule Engine (Robust Regex Parser)
     # =========================================================================
 
+    def _split_compound_rule(self, rule_text: str, field_name: str) -> List[Dict[str, str]]:
+        """
+        쉼표로 구분된 복합 규칙을 개별 규칙으로 분리
+
+        핵심 로직:
+        - "YYYYMMDD, 중간정산기준일<= 입사일" → 두 개의 규칙으로 분리
+        - "1, 3, 4" → 허용값 목록으로 인식 (분리하지 않음)
+
+        조건 구분 쉼표 vs 단순 나열 쉼표 판별:
+        - 단순 나열: 모든 세그먼트가 짧은 값(숫자, 짧은 코드)인 경우
+        - 조건 구분: 키워드(YYYYMMDD, 공백, 중복 등)나 비교연산자가 포함된 경우
+
+        Args:
+            rule_text: 원본 규칙 텍스트
+            field_name: 필드명 (필드 간 비교에서 사용)
+
+        Returns:
+            List[Dict]: 분리된 규칙 목록 [{text, type, ...}, ...]
+        """
+        if not rule_text:
+            return []
+
+        result = []
+        original_rule_text = rule_text
+
+        # 콜론(:) 뒤의 내용만 추출 (예: "중간정산기준일 : YYYYMMDD, ...")
+        if ':' in rule_text:
+            parts = rule_text.split(':', 1)
+            if len(parts) > 1:
+                rule_text = parts[1].strip()
+
+        # 먼저 단순 허용값 나열인지 확인
+        # "1, 3, 4" 또는 "A, B, C" 같은 패턴 (각 값이 짧고 특수 키워드가 없음)
+        is_simple_value_list = self._is_simple_value_list(rule_text)
+        if is_simple_value_list:
+            # 허용값 목록은 분리하지 않고 전체를 하나의 "allowed_values" 타입으로 반환
+            return [{"text": rule_text, "original": original_rule_text, "type": "allowed_values"}]
+
+        # 쉼표로 분리 (단, 괄호 안의 쉼표는 무시)
+        segments = []
+        current = ""
+        paren_depth = 0
+
+        for char in rule_text:
+            if char == '(':
+                paren_depth += 1
+                current += char
+            elif char == ')':
+                paren_depth -= 1
+                current += char
+            elif char == ',' and paren_depth == 0:
+                if current.strip():
+                    segments.append(current.strip())
+                current = ""
+            else:
+                current += char
+
+        if current.strip():
+            segments.append(current.strip())
+
+        # 각 세그먼트 분류
+        for seg in segments:
+            seg_lower = seg.lower().strip()
+            seg_info = {"text": seg, "original": seg}
+
+            # 필드 간 비교 규칙 감지 (<=, >=, <, >, =)
+            comparison_match = re.search(
+                r'([가-힣a-zA-Z0-9_]+)\s*(<=|>=|<>|<|>|=)\s*([가-힣a-zA-Z0-9_]+)',
+                seg
+            )
+            if comparison_match:
+                seg_info["type"] = "comparison"
+                seg_info["left_field"] = comparison_match.group(1).strip()
+                seg_info["operator"] = comparison_match.group(2).strip()
+                seg_info["right_field"] = comparison_match.group(3).strip()
+            # 날짜 형식 감지
+            elif "yyyymmdd" in seg_lower or "yyyy-mm-dd" in seg_lower:
+                seg_info["type"] = "date_format"
+            # 필수/공백 감지
+            elif any(kw in seg for kw in ["공백", "필수", "빈값"]):
+                seg_info["type"] = "required"
+            # 중복 감지
+            elif any(kw in seg for kw in ["중복", "유일", "unique"]):
+                seg_info["type"] = "no_duplicates"
+            # 범위 감지
+            elif any(kw in seg for kw in ["이상", "이하", "초과", "미만"]) or re.search(r'[<>]=?', seg):
+                # 필드 간 비교가 아닌 경우에만 범위로 처리
+                if not comparison_match:
+                    seg_info["type"] = "range"
+            else:
+                seg_info["type"] = "other"
+
+            result.append(seg_info)
+
+        return result
+
+    def _is_simple_value_list(self, text: str) -> bool:
+        """
+        텍스트가 단순 허용값 나열인지 판별
+
+        단순 허용값 나열 조건:
+        - 쉼표나 슬래시로 구분된 짧은 값들 (각 10자 이하)
+        - 특수 키워드(YYYYMMDD, 공백, 중복, 필수 등)가 없음
+        - 비교 연산자(<=, >=, <, >, =)가 없음
+
+        예시:
+        - "1, 3, 4" → True
+        - "A, B, C" → True
+        - "YYYYMMDD, 중간정산기준일 <= 입사일" → False
+        - "공백없음, 중복없음" → False
+        """
+        if not text:
+            return False
+
+        # 특수 키워드가 포함되어 있으면 단순 나열이 아님
+        special_keywords = [
+            "yyyymmdd", "yyyy-mm-dd", "yyyy", "날짜",
+            "공백", "필수", "중복", "유일", "unique",
+            "이상", "이하", "초과", "미만",
+            "형식", "format", "패턴", "regex"
+        ]
+        text_lower = text.lower()
+        if any(kw in text_lower for kw in special_keywords):
+            return False
+
+        # 비교 연산자가 포함되어 있으면 단순 나열이 아님
+        if re.search(r'<=|>=|<>|<|>', text):
+            return False
+
+        # 쉼표나 슬래시로 분리했을 때 모든 값이 짧은 코드인지 확인
+        parts = re.split(r'[,/\s]+', text)
+        parts = [p.strip() for p in parts if p.strip()]
+
+        if len(parts) < 2:
+            return False
+
+        # 모든 값이 10자 이하의 짧은 코드인지 확인
+        for part in parts:
+            if len(part) > 10:
+                return False
+            # 콜론이 포함된 "코드:라벨" 형식도 허용
+            if ':' in part:
+                code_part = part.split(':')[0]
+                if len(code_part) > 10:
+                    return False
+
+        return True
+
+    def _parse_field_comparison(self, comparison_info: Dict[str, str], field_name: str) -> Optional[Dict[str, Any]]:
+        """
+        필드 간 비교 규칙을 date_logic 규칙으로 변환
+
+        Args:
+            comparison_info: {left_field, operator, right_field, text}
+            field_name: 현재 규칙이 정의된 필드명
+
+        Returns:
+            Dict: date_logic 규칙 파라미터 또는 None (현재 필드와 무관한 비교면 None)
+        """
+        left = comparison_info.get("left_field", "")
+        op = comparison_info.get("operator", "")
+        right = comparison_info.get("right_field", "")
+
+        if not left or not op or not right:
+            return None
+
+        # 현재 필드가 비교에 포함되어 있는지 확인
+        # "사원번호" 필드에 "입사일자 > 생년월일" 규칙이 있으면 무시해야 함
+        field_in_left = (left == field_name or left in field_name or field_name in left)
+        field_in_right = (right == field_name or right in field_name or field_name in right)
+
+        if not field_in_left and not field_in_right:
+            # 현재 필드가 비교와 무관하면 규칙 생성하지 않음
+            print(f"[LocalParser] Skipping comparison '{left} {op} {right}' - not related to field '{field_name}'")
+            return None
+
+        # 연산자 변환
+        operator_map = {
+            "<=": "less_than_or_equal",
+            ">=": "greater_than_or_equal",
+            "<": "less_than",
+            ">": "greater_than",
+            "=": "equal",
+            "<>": "not_equal"
+        }
+
+        mapped_op = operator_map.get(op)
+        if not mapped_op:
+            return None
+
+        # 현재 필드와 비교 대상 필드 결정
+        # 예: 필드명이 "중간정산기준일"이고 규칙이 "중간정산기준일 <= 입사일"인 경우
+        # → field_name = 중간정산기준일, compare_field = 입사일
+        if field_in_left:
+            compare_field = right
+        else:
+            compare_field = left
+            # 연산자 방향 반전
+            reverse_map = {
+                "less_than_or_equal": "greater_than_or_equal",
+                "greater_than_or_equal": "less_than_or_equal",
+                "less_than": "greater_than",
+                "greater_than": "less_than",
+                "equal": "equal",
+                "not_equal": "not_equal"
+            }
+            mapped_op = reverse_map.get(mapped_op, mapped_op)
+
+        return {
+            "compare_field": compare_field,
+            "operator": mapped_op,
+            "original_expression": comparison_info.get("text", "")
+        }
+
     def _local_rule_parser(self, natural_language_rules: List[Dict[str, Any]]) -> tuple:
         """
         강력한 정규식 기반 로컬 규칙 파서
         현장에서 자주 사용되는 패턴을 사전 정의하여 AI 없이도 높은 정확도 제공
+
+        복합 규칙 처리:
+        - 쉼표로 구분된 여러 조건을 개별 규칙으로 분리
+        - 필드 간 비교 규칙 (<=, >=, <, >) 지원
         """
         rules = []
         conflicts = []
@@ -387,7 +605,30 @@ class AIRuleInterpreter:
             sheet = nat_rule.get('sheet', '')
             row = nat_rule.get('row', 0)
 
-            if not field or not rule_text:
+            if not field:
+                continue
+
+            # 필드명에 줄바꿈이 있고 허용값 패턴이 포함된 경우 처리
+            # 예: "사유\n(1: 퇴직, 2: DC전환)" → 필드명: "사유", 허용값: ["1", "2"]
+            field_allowed_values = []
+            if '\n' in field:
+                field_parts = field.split('\n', 1)
+                field_name_clean = field_parts[0].strip()
+                field_extra = field_parts[1].strip() if len(field_parts) > 1 else ""
+
+                # 괄호 안에 "숫자: 설명" 패턴이 있는지 확인
+                if field_extra:
+                    code_pattern = re.findall(r'(\d+)\s*[:\-]\s*[가-힣A-Za-z]+', field_extra)
+                    if code_pattern:
+                        field_allowed_values = code_pattern
+                        # 규칙 텍스트가 비어있으면 필드 설명을 규칙으로 사용
+                        if not rule_text:
+                            rule_text = field_extra
+
+                # 필드명을 정리된 이름으로 업데이트 (선택적)
+                # field = field_name_clean  # 필요시 활성화
+
+            if not rule_text and not field_allowed_values:
                 continue
 
             # Track if any rule was created for this nat_rule
@@ -478,11 +719,61 @@ class AIRuleInterpreter:
                     ))
                 rule_counter += 1
 
+            # 4-1. 일반 허용값 목록 (성별 외 필드)
+            # "1, 3, 4" 또는 "(1/3/4)" 같은 단순 나열 패턴
+            # 단, 특수 키워드(공백, 중복, 필수 등)가 포함되면 허용값 목록으로 처리하지 않음
+            special_keywords_in_rule = any(kw in rule_text for kw in [
+                "공백", "필수", "중복", "유일", "형식", "날짜", "YYYY", "이상", "이하"
+            ])
+
+            if "성별" not in field and "gender" not in field.lower() and not special_keywords_in_rule:
+                allowed_values = []
+
+                # 패턴1: "1:정규직, 3:임원" 형태
+                code_pattern = re.findall(r'([A-Za-z0-9]+)\s*[:\-]\s*[가-힣]+', rule_text)
+                if code_pattern:
+                    allowed_values = code_pattern
+
+                # 패턴2: 괄호 안의 값 "(1/3/4)"
+                if not allowed_values:
+                    paren_match = re.search(r'\(([^)]+)\)', rule_text)
+                    if paren_match:
+                        inner = paren_match.group(1)
+                        if '/' in inner or ',' in inner:
+                            parts = re.split(r'[/,\s]+', inner)
+                            allowed_values = [p.strip() for p in parts if p.strip() and ':' not in p]
+
+                # 패턴3: "허용: 1, 3, 4"
+                if not allowed_values:
+                    allowed_match = re.search(r'(?:허용|allowed)[:\s]*([^\.]+)', rule_text, re.IGNORECASE)
+                    if allowed_match:
+                        parts = re.split(r'[,\s]+', allowed_match.group(1))
+                        allowed_values = [p.strip() for p in parts if p.strip()]
+
+                # 패턴4: 단순 나열 "1, 3, 4" (규칙 전체가 쉼표로 구분된 값 목록)
+                if not allowed_values:
+                    simple_list_match = re.match(r'^[\s]*([A-Za-z0-9가-힣]{1,10})(?:\s*[,/]\s*([A-Za-z0-9가-힣]{1,10}))+[\s]*$', rule_text)
+                    if simple_list_match:
+                        parts = re.split(r'[,/\s]+', rule_text)
+                        allowed_values = [p.strip() for p in parts if p.strip()]
+
+                if allowed_values and len(allowed_values) >= 2:
+                    allowed_preview = ', '.join(allowed_values[:5])
+                    rules.append(self._create_rule(
+                        rule_counter, field, "format",
+                        {"allowed_values": allowed_values},
+                        f"{{field_name}} 값이 올바르지 않습니다. (허용: {allowed_preview})", nat_rule, f"허용값({allowed_preview})"
+                    ))
+                    rule_counter += 1
+
             # 5. 숫자/금액 범위 또는 타입
             is_numeric_rule = any(kw in rule_text for kw in ["금액", "숫자", "원", "수치", "amount", "number", "numeric"])
             has_range = ">" in rule_text or "<" in rule_text or "이상" in rule_text or "이하" in rule_text
 
-            if has_range or is_numeric_rule:
+            # 필드 간 비교인지 확인 (예: "중간정산기준일 <= 입사일")
+            is_field_comparison = bool(re.search(r'[가-힣a-zA-Z_]+\s*[<>=]+\s*[가-힣a-zA-Z_]+', rule_text))
+
+            if (has_range or is_numeric_rule) and not is_field_comparison:
                 nums = re.findall(r'\d+', rule_text)
 
                 # 범위가 있는 경우 (예: "0 이상")
@@ -509,15 +800,58 @@ class AIRuleInterpreter:
                     ))
                     rule_counter += 1
 
-            # Fallback: 규칙이 하나도 생성되지 않은 경우 Custom 규칙 생성
+            # 6. 필드 간 비교 규칙 (date_logic)
+            # 복합 규칙 분리 후 처리
+            split_rules = self._split_compound_rule(rule_text, field)
+            for split_info in split_rules:
+                if split_info.get("type") == "comparison":
+                    comparison_params = self._parse_field_comparison(split_info, field)
+                    if comparison_params:
+                        compare_field = comparison_params.get("compare_field", "")
+                        operator = comparison_params.get("operator", "")
+
+                        # 연산자에 따른 에러 메시지 생성
+                        op_display = {
+                            "less_than_or_equal": "<=",
+                            "greater_than_or_equal": ">=",
+                            "less_than": "<",
+                            "greater_than": ">",
+                            "equal": "=",
+                            "not_equal": "<>"
+                        }.get(operator, operator)
+
+                        error_msg = "{field_name}은(는) " + compare_field + " 조건을 만족해야 합니다. (" + field + " " + op_display + " " + compare_field + ")"
+
+                        rules.append(self._create_rule(
+                            rule_counter, field, "date_logic",
+                            comparison_params,
+                            error_msg, nat_rule,
+                            f"필드비교({field}{op_display}{compare_field})"
+                        ))
+                        rule_counter += 1
+                        print(f"[LocalParser] Created date_logic rule: {field} {op_display} {compare_field}")
+
+            # Fallback: 규칙이 하나도 생성되지 않은 경우
             if rule_counter == initial_counter:
-                print(f"[LocalParser] No specific rule matched for field '{field}', creating custom rule")
-                rules.append(self._create_rule(
-                    rule_counter, field, "custom",
-                    {"description": rule_text},
-                    f"{{{{field_name}}}} 검증 실패: {rule_text}", nat_rule, "사용자 정의 규칙 (Manual Check)", confidence=0.7
-                ))
-                rule_counter += 1
+                # 필드명에서 추출한 허용값이 있으면 format 규칙 생성
+                if field_allowed_values:
+                    allowed_preview = ', '.join(field_allowed_values[:5])
+                    print(f"[LocalParser] Created format rule from field name for '{field}': allowed_values={field_allowed_values}")
+                    rules.append(self._create_rule(
+                        rule_counter, field, "format",
+                        {"allowed_values": field_allowed_values},
+                        f"{{field_name}} 값이 올바르지 않습니다. (허용: {allowed_preview})", nat_rule, f"허용값({allowed_preview})"
+                    ))
+                    rule_counter += 1
+                else:
+                    # Custom 규칙 생성
+                    print(f"[LocalParser] No specific rule matched for field '{field}', creating custom rule")
+                    rules.append(self._create_rule(
+                        rule_counter, field, "custom",
+                        {"description": rule_text},
+                        f"{{{{field_name}}}} 검증 실패: {rule_text}", nat_rule, "사용자 정의 규칙 (Manual Check)", confidence=0.7
+                    ))
+                    rule_counter += 1
 
         print(f"[LocalParser] Generated {len(rules)} rules total")
         for i, rule in enumerate(rules[:5]):  # 처음 5개만 출력
@@ -626,7 +960,7 @@ class AIRuleInterpreter:
                 summaries.append("YYYY-MM-DD형식")
 
         # ===== 4. 허용값 목록 (Allowed Values) =====
-        # 패턴: "M/F", "1:남, 2:여", "(허용: A, B, C)"
+        # 패턴: "M/F", "1:남, 2:여", "(허용: A, B, C)", "1, 3, 4"
         allowed_values = []
 
         # 패턴1: "1:남자, 2:여자" 형태
@@ -648,6 +982,15 @@ class AIRuleInterpreter:
         if allowed_match and not allowed_values:
             parts = re.split(r'[,\s]+', allowed_match.group(1))
             allowed_values = [p.strip() for p in parts if p.strip()]
+
+        # 패턴4: 단순 나열 "1, 3, 4" 또는 "1,3,4" (숫자 또는 짧은 코드만)
+        # 규칙 텍스트 전체가 쉼표로 구분된 값 목록인 경우
+        if not allowed_values:
+            # 공백과 쉼표로만 구분된 짧은 값들 (각 값이 10자 이하)
+            simple_list_match = re.match(r'^[\s]*([A-Za-z0-9가-힣]{1,10})(?:\s*[,/]\s*([A-Za-z0-9가-힣]{1,10}))+[\s]*$', rule_text)
+            if simple_list_match:
+                parts = re.split(r'[,/\s]+', rule_text)
+                allowed_values = [p.strip() for p in parts if p.strip()]
 
         if allowed_values:
             validations.append({
@@ -706,6 +1049,33 @@ class AIRuleInterpreter:
             })
             summaries.append("숫자타입")
 
+        # ===== 7. 필드 간 비교 (Date Logic / Cross Field) =====
+        # 복합 규칙 분리 후 필드 비교 조건 처리
+        split_rules = self._split_compound_rule(rule_text, column_name)
+        for split_info in split_rules:
+            if split_info.get("type") == "comparison":
+                comparison_params = self._parse_field_comparison(split_info, column_name)
+                if comparison_params:
+                    compare_field = comparison_params.get("compare_field", "")
+                    operator = comparison_params.get("operator", "")
+
+                    # 연산자 표시 변환
+                    op_display = {
+                        "less_than_or_equal": "<=",
+                        "greater_than_or_equal": ">=",
+                        "less_than": "<",
+                        "greater_than": ">",
+                        "equal": "=",
+                        "not_equal": "<>"
+                    }.get(operator, operator)
+
+                    validations.append({
+                        "type": "date_logic",
+                        "parameters": comparison_params,
+                        "error_message": f"{{field_name}}은(는) {compare_field} 조건({op_display})을 만족해야 합니다."
+                    })
+                    summaries.append(f"필드비교({column_name}{op_display}{compare_field})")
+
         # ===== 결과 생성 =====
         if len(validations) == 0:
             # 해석 실패 - custom 규칙
@@ -748,14 +1118,32 @@ class AIRuleInterpreter:
     def _local_fix_engine(self, errors: List[Dict[str, Any]]) -> List[FixSuggestion]:
         """
         현장 데이터 최적화된 스마트 수정 엔진
+
+        핵심 원칙:
+        - 필드 타입과 값 타입이 일치하는 경우에만 자동 수정 제안
+        - 금액 필드에 날짜가 들어간 경우 → 자동수정 불가 (완전히 잘못된 데이터)
+        - 날짜 필드에 날짜 형식이 다른 경우 → 형식 변환 제안
         """
         suggestions = []
-        
+
+        # 금액/숫자 관련 필드 키워드
+        numeric_field_keywords = [
+            "급여", "금액", "수당", "원", "임금", "보수", "연봉", "월급",
+            "salary", "amount", "wage", "pay", "bonus", "income",
+            "기준급", "평균급", "통상급", "퇴직금", "retirement"
+        ]
+
+        # 날짜 관련 필드 키워드
+        date_field_keywords = [
+            "일", "일자", "date", "날짜", "기준일", "입사", "퇴사", "생년월일",
+            "정산", "산정", "기산", "만료", "시작", "종료"
+        ]
+
         for err in errors:
             val = str(err.get('actual_value', ''))
             field = str(err.get('column', ''))
             msg = str(err.get('message', ''))
-            
+
             # Skip invalid values
             if val == 'None' or val == 'nan' or not val:
                 continue
@@ -765,8 +1153,25 @@ class AIRuleInterpreter:
             score = 0.0
             auto = False
 
-            # 1. 날짜 표준화 (YYYYMMDD)
-            if "형식" in msg and ("YYYYMMDD" in msg or "날짜" in field):
+            field_lower = field.lower()
+
+            # 필드 타입 판별
+            is_numeric_field = any(kw in field for kw in numeric_field_keywords) or \
+                               any(kw in field_lower for kw in ["salary", "amount", "wage", "pay"])
+            is_date_field = any(kw in field for kw in date_field_keywords) or \
+                            any(kw in field_lower for kw in ["date"])
+
+            # 입력값이 날짜 형식인지 확인
+            is_date_value = bool(re.match(r'^\d{4}[-./]\d{2}[-./]\d{2}$', val))
+
+            # 1. 금액 필드에 날짜가 들어간 경우 → 자동수정 불가
+            if is_numeric_field and is_date_value:
+                # 이 경우는 완전히 잘못된 데이터이므로 수정 제안하지 않음
+                # (자동 수정 불가능한 케이스)
+                continue
+
+            # 2. 날짜 필드에서 날짜 형식 표준화 (YYYYMMDD)
+            if is_date_field and ("YYYYMMDD" in msg or "날짜" in msg or "형식" in msg):
                 # 2023-01-01 -> 20230101
                 if re.match(r'^\d{4}-\d{2}-\d{2}$', val):
                     fixed = val.replace("-", "")
@@ -785,13 +1190,6 @@ class AIRuleInterpreter:
                     reason = "표준 포맷으로 변환 (/ 제거)"
                     score = 0.99
                     auto = True
-                # Excel Serial Date (예: 45000 -> 날짜)
-                elif re.match(r'^\d{5}$', val):
-                    try:
-                        # 엑셀 기준일 1899-12-30 처리 로직은 복잡하므로 간단히 언급
-                        # 여기서는 단순 숫자 포맷 오류인 경우만 처리
-                        pass 
-                    except: pass
 
             # 2. 성별 표준화
             elif "성별" in field or "gender" in field.lower():

@@ -11,6 +11,7 @@ AI가 해석한 규칙을 결정론적으로 실행하는 검증 엔진
 """
 
 import re
+import numpy as np
 import pandas as pd
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -301,49 +302,99 @@ class RuleEngine:
     
     def _validate_date_logic(self, data: pd.DataFrame, rule: ValidationRule):
         """
-        날짜 논리 검증 (예: 입사일 > 생년월일)
+        날짜 논리 검증 (예: 입사일 > 생년월일, 중간정산기준일 <= 입사일)
+
+        지원 연산자:
+        - greater_than: >
+        - less_than: <
+        - greater_than_or_equal: >=
+        - less_than_or_equal: <=
+        - equal: =
+        - not_equal: <>
         """
         field = rule.field_name
         params = rule.parameters
-        
+
         if field not in data.columns:
             return
-        
+
         compare_field = params.get("compare_field")
         operator = params.get("operator")
-        
+
         if not compare_field or compare_field not in data.columns:
+            # 비교 대상 필드가 없으면 경고 로그만 출력
+            print(f"[RuleEngine] Warning: compare_field '{compare_field}' not found in data columns for date_logic rule on '{field}'")
             return
-        
+
+        # 연산자 표시 맵
+        op_display = {
+            "greater_than": ">",
+            "less_than": "<",
+            "greater_than_or_equal": ">=",
+            "less_than_or_equal": "<=",
+            "equal": "=",
+            "not_equal": "<>"
+        }
+
         for idx in range(len(data)):
             value1 = data.loc[idx, field]
             value2 = data.loc[idx, compare_field]
-            
+
             if pd.isna(value1) or pd.isna(value2):
                 continue
-            
+
+            # 문자열로 변환하여 비교 (날짜 형식 YYYYMMDD는 문자열 비교로 정확함)
+            str_val1 = str(value1).strip()
+            str_val2 = str(value2).strip()
+
+            # 숫자형 날짜 처리 (예: 20230101.0 -> 20230101)
+            if '.' in str_val1:
+                try:
+                    str_val1 = str(int(float(str_val1)))
+                except (ValueError, TypeError):
+                    pass
+            if '.' in str_val2:
+                try:
+                    str_val2 = str(int(float(str_val2)))
+                except (ValueError, TypeError):
+                    pass
+
+            is_valid = True
+
             # 날짜 비교
             if operator == "greater_than":
-                if str(value1) <= str(value2):
-                    self._add_error(
-                        row=idx + 2,
-                        column=field,
-                        rule=rule,
-                        message=rule.error_message_template,
-                        actual_value=f"{field}={value1}, {compare_field}={value2}",
-                        expected=f"{field} > {compare_field}"
-                    )
-            
+                if str_val1 <= str_val2:
+                    is_valid = False
+
             elif operator == "less_than":
-                if str(value1) >= str(value2):
-                    self._add_error(
-                        row=idx + 2,
-                        column=field,
-                        rule=rule,
-                        message=rule.error_message_template,
-                        actual_value=f"{field}={value1}, {compare_field}={value2}",
-                        expected=f"{field} < {compare_field}"
-                    )
+                if str_val1 >= str_val2:
+                    is_valid = False
+
+            elif operator == "greater_than_or_equal":
+                if str_val1 < str_val2:
+                    is_valid = False
+
+            elif operator == "less_than_or_equal":
+                if str_val1 > str_val2:
+                    is_valid = False
+
+            elif operator == "equal":
+                if str_val1 != str_val2:
+                    is_valid = False
+
+            elif operator == "not_equal":
+                if str_val1 == str_val2:
+                    is_valid = False
+
+            if not is_valid:
+                self._add_error(
+                    row=idx + 2,
+                    column=field,
+                    rule=rule,
+                    message=rule.error_message_template,
+                    actual_value=f"{field}={str_val1}, {compare_field}={str_val2}",
+                    expected=f"{field} {op_display.get(operator, operator)} {compare_field}"
+                )
             
             # 최소 나이 체크 (입사 시)
             if "min_age_at_hire" in params:
@@ -548,6 +599,61 @@ class RuleEngine:
                             )
 
                 # 4. No Duplicates 검증은 별도 처리 필요 (행 단위가 아닌 컬럼 전체 대상)
+
+                # 5. Date Logic 검증 (필드 간 비교)
+                elif v_type == "date_logic":
+                    compare_field = v_params.get("compare_field")
+                    operator = v_params.get("operator")
+
+                    if compare_field and compare_field in data.columns:
+                        compare_value = data.loc[idx, compare_field]
+
+                        if pd.notna(compare_value):
+                            # 문자열로 변환
+                            str_val1 = str(value).strip()
+                            str_val2 = str(compare_value).strip()
+
+                            # 숫자형 날짜 처리
+                            if '.' in str_val1:
+                                try:
+                                    str_val1 = str(int(float(str_val1)))
+                                except (ValueError, TypeError):
+                                    pass
+                            if '.' in str_val2:
+                                try:
+                                    str_val2 = str(int(float(str_val2)))
+                                except (ValueError, TypeError):
+                                    pass
+
+                            is_valid = True
+
+                            if operator == "greater_than":
+                                if str_val1 <= str_val2:
+                                    is_valid = False
+                            elif operator == "less_than":
+                                if str_val1 >= str_val2:
+                                    is_valid = False
+                            elif operator == "greater_than_or_equal":
+                                if str_val1 < str_val2:
+                                    is_valid = False
+                            elif operator == "less_than_or_equal":
+                                if str_val1 > str_val2:
+                                    is_valid = False
+                            elif operator == "equal":
+                                if str_val1 != str_val2:
+                                    is_valid = False
+                            elif operator == "not_equal":
+                                if str_val1 == str_val2:
+                                    is_valid = False
+
+                            if not is_valid:
+                                self._add_error(
+                                    row=row_num,
+                                    column=field,
+                                    rule=rule,
+                                    message=v_error_msg,
+                                    actual_value=f"{field}={str_val1}, {compare_field}={str_val2}"
+                                )
 
         # No Duplicates 검증 (컬럼 전체 대상)
         for v in validations:
