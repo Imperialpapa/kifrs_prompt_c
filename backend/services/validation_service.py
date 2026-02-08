@@ -12,6 +12,7 @@ from database.rule_repository import RuleRepository
 from database.validation_repository import ValidationRepository
 from services.ai_cache_service import AICacheService
 from rule_engine import RuleEngine, KIFRS_RuleEngine
+from utils.field_matcher import FieldMatcher
 
 class ValidationService:
     """
@@ -24,6 +25,7 @@ class ValidationService:
         self.validation_repository = ValidationRepository()
         self.ai_cache_service = AICacheService()
         self.rule_engine = RuleEngine()
+        self.field_matcher = FieldMatcher()
 
     async def validate_sheets(
         self,
@@ -31,47 +33,57 @@ class ValidationService:
         validation_rules: List[ValidationRule]
     ) -> ValidationResponse:
         """
-        공통 시트 검증 로직
-        
+        공통 시트 검증 로직 (필드명 기반 규칙 적용)
+
+        규칙은 시트에 종속되지 않고, 해당 필드가 존재하는 모든 시트에 적용됩니다.
+        FieldMatcher를 통해 유사한 항목명에도 규칙을 적용합니다.
+
         Args:
             sheet_data_map: Canonical Name -> { display_name, original_name, df }
             validation_rules: 적용할 규칙 리스트
-            
+
         Returns:
             ValidationResponse: 전체 검증 결과
         """
         all_errors = []
         all_sheets_summary = {}
 
-        # 규칙을 시트별로 그룹화
-        from collections import defaultdict
-        rules_by_sheet = defaultdict(list)
-        for rule in validation_rules:
-            rules_by_sheet[rule.source.sheet_name].append(rule)
-
-        # 각 시트 검증
+        # 각 시트에 적용 가능한 규칙 필터링 (필드명 기반)
         for canonical_name, data in sheet_data_map.items():
             display_name = data["display_name"]
             df = data["df"]
+            sheet_columns = [str(col) for col in df.columns]
+
+            # FieldMatcher를 사용하여 규칙 필드명과 실제 컬럼 매핑
+            field_mapping = self.field_matcher.match_rules_to_columns(validation_rules, sheet_columns)
             
-            sheet_rules = rules_by_sheet.get(canonical_name, [])
-            if not sheet_rules:
+            # 매핑된 컬럼을 기준으로 규칙 재구성 (필드명 변경)
+            applicable_rules = []
+            for rule in validation_rules:
+                if rule.field_name in field_mapping:
+                    # 원본 규칙을 복사하여 필드명만 매핑된 컬럼명으로 변경
+                    mapped_col = field_mapping[rule.field_name]
+                    rule_copy = rule.copy()
+                    rule_copy.field_name = mapped_col
+                    applicable_rules.append(rule_copy)
+
+            if not applicable_rules:
                 continue
-            
-            errors = self.rule_engine.validate(df, sheet_rules)
-            summary = self.rule_engine.get_summary(len(df), len(sheet_rules))
+
+            errors = self.rule_engine.validate(df, applicable_rules)
+            summary = self.rule_engine.get_summary(len(df), len(applicable_rules))
 
             for error in errors:
                 error.sheet = display_name
-            
+
             all_errors.extend(errors)
-            
+
             all_sheets_summary[display_name] = {
                 "total_rows": len(df),
                 "error_rows": summary.error_rows,
                 "valid_rows": summary.valid_rows,
                 "total_errors": len(errors),
-                "rules_applied": len(sheet_rules)
+                "rules_applied": len(applicable_rules)
             }
 
         # 데이터 정제 (Numpy 타입 변환)
@@ -234,38 +246,10 @@ class ValidationService:
                 print(f"  -> Dropped {original_len - len(df)} garbage rows.")
                 data["df"] = df
 
-        # Step 3: 공통 규칙(is_common) 확장 적용
-        # 공통 규칙은 모든 시트를 검사하여 동일한 필드명이 있으면 자동으로 적용됨
-        print("[ValidationService] Expanding common rules...")
-        common_rules = [r for r in validation_rules if r.is_common]
-        expanded_rules = []
-
-        if common_rules:
-            for canonical_name, data in sheet_data_map.items():
-                sheet_columns = set(data["df"].columns)
-                display_name = data["display_name"]
-
-                for common_rule in common_rules:
-                    # 해당 시트에 공통 규칙의 필드가 존재하는지 확인
-                    if common_rule.field_name in sheet_columns:
-                        # 이미 해당 시트에 대해 정의된 규칙인지 확인 (중복 적용 방지 - 원본이 해당 시트인 경우)
-                        if common_rule.source.sheet_name == canonical_name:
-                            continue
-
-                        # 새 규칙 인스턴스 생성 (해당 시트용으로 복제)
-                        from copy import deepcopy
-                        new_rule = deepcopy(common_rule)
-                        new_rule.source.sheet_name = canonical_name
-                        # 규칙 ID에 시트명을 붙여서 유니크하게 만듦 (디버깅 용이)
-                        new_rule.rule_id = f"{common_rule.rule_id}_COMMON_{canonical_name}"
-                        new_rule.source.original_text += f" (공통규칙 적용: {display_name})"
-                        
-                        expanded_rules.append(new_rule)
-                        # print(f"  - Applied common rule '{common_rule.field_name}' to sheet '{display_name}'")
-
-            if expanded_rules:
-                print(f"[ValidationService] Added {len(expanded_rules)} expanded common rules")
-                validation_rules.extend(expanded_rules)
+        # Step 3: 필드명 기반 규칙 적용
+        # 시트명 제거됨 - 모든 규칙은 해당 필드가 존재하는 모든 시트에 자동 적용됩니다.
+        # 별도의 공통 규칙 확장이 필요 없음 (validate_sheets에서 필드 기반 매칭 수행)
+        print(f"[ValidationService] Applying {len(validation_rules)} field-based rules to all matching sheets")
 
         # Step 4: 공통 검증 로직 실행
         validation_res = await self.validate_sheets(sheet_data_map, validation_rules)
@@ -337,57 +321,61 @@ class ValidationService:
                 validation_res.errors = all_errors
                 validation_res.error_groups = group_errors(all_errors)
 
-        # Step 4: 매칭 통계 추가
+        # Step 4: 매칭 통계 추가 (필드 기반)
         file_record = await self.rule_repository.get_rule_file(UUID(rule_file_id))
+
+        # 고유 필드 목록
+        unique_rule_fields = set(r.field_name for r in validation_rules)
+
         matching_stats = {
             "matched_sheets": len(validation_res.metadata["sheets_summary"]),
-            "total_rule_sheets": file_record.get('sheet_count', 0) if file_record else 0,
+            "total_rule_fields": len(unique_rule_fields),
             "all_data_sheets": [data['display_name'] for data in sheet_data_map.values()],
-            "all_rule_sheets": list(set(r.source.sheet_name for r in validation_rules))
+            "all_rule_fields": list(unique_rule_fields)
         }
 
-        # --- Rule-specific Status Calculation ---
+        # --- Rule-specific Status Calculation (Sheet-specific) ---
         from collections import Counter
-        error_counts_by_rule = Counter(err.rule_id for err in validation_res.errors)
-        
-        rules_validation_status = []
-        # Need access to get_canonical_name for mapping
-        from utils.excel_parser import get_canonical_name
+        # Get sheet-specific error counts
+        error_counts_by_sheet_rule = Counter((err.sheet, err.rule_id) for err in validation_res.errors)
 
-        # Create column order map for each sheet
+        rules_by_sheet = {}
         column_order_map = {}
         for c_name, data in sheet_data_map.items():
-            column_order_map[c_name] = {col: idx for idx, col in enumerate(data['df'].columns)}
-
-        for rule in validation_rules:
-            err_count = error_counts_by_rule.get(rule.rule_id, 0)
-            status_msg = "검증 100% 완료!" if err_count == 0 else f"{err_count}건의 수정 필요사항 발견"
+            sheet_name = data['display_name']
+            column_order_map[sheet_name] = {col: idx for idx, col in enumerate(data['df'].columns)}
             
-            # Map to display_name
-            rule_canonical = get_canonical_name(rule.source.sheet_name)
-            display_sheet_name = sheet_data_map.get(rule_canonical, {}).get("display_name", rule.source.sheet_name)
+            sheet_rules = []
+            # FieldMatcher를 사용하여 이 시트에 실제로 적용된 매핑 확인
+            sheet_columns = [str(col) for col in data["df"].columns]
+            field_mapping = self.field_matcher.match_rules_to_columns(validation_rules, sheet_columns)
+            
+            for rule in validation_rules:
+                # 규칙의 field_name이 이 시트의 컬럼과 매핑되는지 확인
+                if rule.field_name in field_mapping:
+                    mapped_col = field_mapping[rule.field_name]
+                    err_count = error_counts_by_sheet_rule.get((sheet_name, rule.rule_id), 0)
+                    status_msg = "검증 100% 완료!" if err_count == 0 else f"{err_count}건의 수정 필요사항 발견"
+                    
+                    sheet_rules.append({
+                        "rule_id": rule.rule_id,
+                        "field_name": mapped_col,
+                        "rule_text": rule.source.original_text,
+                        "error_count": err_count,
+                        "status_message": status_msg,
+                        "column_index": column_order_map[sheet_name].get(mapped_col, 999)
+                    })
+            
+            # Sort by column index
+            sheet_rules.sort(key=lambda x: x['column_index'])
+            rules_by_sheet[sheet_name] = sheet_rules
 
-            # Get column index for sorting
-            col_idx = 9999
-            if rule_canonical in column_order_map:
-                col_idx = column_order_map[rule_canonical].get(rule.field_name, 9999)
-
-            rules_validation_status.append({
-                "rule_id": rule.rule_id,
-                "field_name": rule.field_name,
-                "rule_text": rule.source.original_text,
-                "sheet_name": display_sheet_name,
-                "error_count": err_count,
-                "status_message": status_msg,
-                "column_index": col_idx
-            })
-        
-        # Sort by sheet name then column index
-        rules_validation_status.sort(key=lambda x: (x['sheet_name'], x['column_index']))
+        # 시트 순서 보장을 위해 metadata에 명시
+        sheet_order = [data['display_name'] for data in sheet_data_map.values()]
 
         # --- AI Role Summary Generation ---
         ai_summary_text = (
-            f"AI는 저장된 규칙을 로드하여 {matching_stats['matched_sheets']}개의 시트에 매핑했습니다. "
+            f"AI는 저장된 규칙 {len(validation_rules)}개를 로드하여 {matching_stats['matched_sheets']}개의 시트에 적용했습니다. "
             f"총 {validation_res.summary.total_rows}행의 데이터를 검증하고 "
             f"{validation_res.summary.total_errors}건의 데이터 오류를 식별했습니다."
         )
@@ -396,7 +384,9 @@ class ValidationService:
             "employee_file_name": employee_file_name,
             "rule_file_id": rule_file_id,
             "matching_stats": matching_stats,
-            "rules_validation_status": rules_validation_status,
+            "rules_by_sheet": rules_by_sheet,
+            "sheet_order": sheet_order,
+            "column_order_map": column_order_map,
             "ai_role_summary": ai_summary_text
         })
 
@@ -405,6 +395,10 @@ class ValidationService:
         session_token = f"V-{datetime.now().strftime('%Y%m%d')}-{session_id[:8].upper()}"
         
         full_results_json = json.loads(validation_res.json())
+
+        # full_results에서 개별 에러 목록 제거 (validation_errors 테이블에 별도 저장됨)
+        # Supabase 응답 크기 제한(502) 방지
+        full_results_slim = {k: v for k, v in full_results_json.items() if k != "errors"}
 
         session_data = {
             "id": session_id,
@@ -419,7 +413,7 @@ class ValidationService:
             "rules_applied_count": validation_res.summary.rules_applied,
             "validation_status": validation_res.validation_status,
             "validation_processing_time_seconds": engine_duration,
-            "full_results": full_results_json,
+            "full_results": full_results_slim,
             "created_at": datetime.now().isoformat()
         }
 
@@ -452,13 +446,32 @@ class ValidationService:
     async def get_session_details(self, session_id: str) -> Dict[str, Any]:
         """
         세션 상세 정보 조회
+        full_results에서 제거된 errors를 validation_errors 테이블에서 재합성
         """
         session = await self.validation_repository.get_session(UUID(session_id))
         if not session:
             return None
-            
+
         errors = await self.validation_repository.get_session_errors(UUID(session_id))
-        
+
+        # full_results에 errors가 없으면 DB에서 재합성
+        full_results = session.get("full_results")
+        if full_results and "errors" not in full_results and errors:
+            full_results["errors"] = [
+                {
+                    "sheet": e.get("sheet_name"),
+                    "row": e.get("row_number"),
+                    "column": e.get("column_name"),
+                    "rule_id": e.get("rule_id"),
+                    "message": e.get("error_message"),
+                    "actual_value": e.get("actual_value"),
+                    "expected": e.get("expected_value"),
+                    "source_rule": e.get("source_rule_text", "")
+                }
+                for e in errors
+            ]
+            session["full_results"] = full_results
+
         return {
             "session": session,
             "errors": errors

@@ -68,6 +68,11 @@ class RuleEngine:
         """
         개별 규칙 적용
         """
+        # 행 검증 항목(axis='row')은 향후 추가 예정이므로 현재는 열(column) 검증만 수행
+        if hasattr(rule, 'validation_axis') and rule.validation_axis == "row":
+            print(f"[RuleEngine] Skipping row-based rule for now: {rule.rule_id}")
+            return
+
         if rule.rule_type == "required":
             self._validate_required(data, rule)
         
@@ -76,6 +81,9 @@ class RuleEngine:
         
         elif rule.rule_type == "format":
             self._validate_format(data, rule)
+        
+        elif rule.rule_type == "allowed_values":
+            self._validate_allowed_values(data, rule)
         
         elif rule.rule_type == "range":
             self._validate_range(data, rule)
@@ -106,16 +114,27 @@ class RuleEngine:
         field = rule.field_name
         
         if field not in data.columns:
-            # 컬럼 자체가 없으면 모든 행에 대해 오류 (단, 데이터가 있는 행에 대해서만)
-            for idx in data.index:
-                self._add_error(
-                    row=idx + 2,
-                    column=field,
-                    rule=rule,
-                    message=f"필수 컬럼 '{field}'가 존재하지 않습니다.",
-                    actual_value=None
-                )
-            return
+            # 보조 매칭: 정규화된 이름으로 한 번 더 확인
+            normalized_field = re.sub(r'[^a-zA-Z0-9가-힣]', '', str(field)).lower()
+            found_col = None
+            for col in data.columns:
+                if re.sub(r'[^a-zA-Z0-9가-힣]', '', str(col)).lower() == normalized_field:
+                    found_col = col
+                    break
+            
+            if found_col:
+                field = found_col
+            else:
+                # 컬럼 자체가 없으면 모든 행에 대해 오류 (단, 데이터가 있는 행에 대해서만)
+                for idx in data.index:
+                    self._add_error(
+                        row=idx + 2,
+                        column=field,
+                        rule=rule,
+                        message=f"필수 컬럼 '{field}'가 존재하지 않습니다.",
+                        actual_value=None
+                    )
+                return
         
         # Null, NaN, 빈 문자열 체크 (인덱스 유지)
         for idx, value in data[field].items():
@@ -226,6 +245,40 @@ class RuleEngine:
                             expected=fmt
                         )
     
+    def _validate_allowed_values(self, data: pd.DataFrame, rule: ValidationRule):
+        """
+        허용값 목록(나열형) 검증
+        """
+        field = rule.field_name
+        params = rule.parameters
+        
+        if field not in data.columns:
+            return
+            
+        allowed = params.get("allowed_values", [])
+        if not allowed:
+            return
+
+        def normalize_val(v):
+            if pd.isna(v): return v
+            if isinstance(v, float) and v.is_integer():
+                return str(int(v))
+            return str(v)
+
+        for idx, value in data[field].items():
+            if pd.notna(value):
+                norm_val = normalize_val(value)
+                # 원본값 또는 문자열 변환값이 허용 목록에 있는지 확인
+                if value not in allowed and norm_val not in [str(a) for a in allowed]:
+                    self._add_error(
+                        row=idx + 2,
+                        column=field,
+                        rule=rule,
+                        message=rule.error_message_template,
+                        actual_value=value,
+                        expected=f"{allowed} 중 하나"
+                    )
+
     def _validate_range(self, data: pd.DataFrame, rule: ValidationRule):
         """
         범위 검증 (숫자 또는 날짜)

@@ -278,8 +278,7 @@ class LearningService:
             "source_rule_id": source_rule_id,
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
-            "is_active": True,
-            "status": "active"
+            "is_active": True
         }
 
         if self.client:
@@ -300,8 +299,7 @@ class LearningService:
                         "usage_count": old_pattern.get("usage_count", 0) + 1,
                         "confidence_score": min(1.0, old_pattern.get("confidence_score", 0.95) + 0.01),
                         "updated_at": datetime.now().isoformat(),
-                        "is_active": True, # 재활성화
-                        "status": "active" # 상태 업데이트
+                        "is_active": True # 재활성화
                     }
                     self.client.table('rule_patterns') \
                         .update(update_data) \
@@ -356,7 +354,6 @@ class LearningService:
         try:
             result = self.client.table('rule_patterns') \
                 .update({
-                    "status": "active", 
                     "is_active": True,
                     "updated_at": datetime.now().isoformat()
                 }) \
@@ -1101,9 +1098,7 @@ class LearningService:
                     self.client.table('rule_patterns') \
                         .update({
                             'is_active': False,
-                            'status': 'inactive',
-                            'updated_at': datetime.now().isoformat(),
-                            'deactivated_reason': f'Low success rate: {success_rate:.1%}'
+                            'updated_at': datetime.now().isoformat()
                         }) \
                         .eq('id', pattern['id']) \
                         .execute()

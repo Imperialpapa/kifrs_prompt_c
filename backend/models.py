@@ -41,10 +41,10 @@ class RuleSource(BaseModel):
     """
     규칙의 출처 추적
     - AI가 해석한 규칙의 원본과 근거를 명확히 기록
+    - 시트명 제거: 필드명 기반 규칙 관리로 변경
     """
     original_text: str = Field(..., description="Excel B의 원본 자연어 규칙")
-    sheet_name: str = Field(..., description="시트명")
-    row_number: int = Field(..., description="행 번호")
+    row_number: str = Field(..., description="행 번호 (서브 인덱스 지원: 5, 5.1, 5.2)")
     kifrs_reference: Optional[str] = Field(None, description="K-IFRS 1019 관련 조항")
 
 
@@ -59,6 +59,7 @@ class ValidationRule(BaseModel):
         "required",
         "no_duplicates", 
         "format",
+        "allowed_values",
         "range",
         "date_logic",
         "cross_field",
@@ -87,6 +88,11 @@ class ValidationRule(BaseModel):
     ai_interpretation_summary: str = Field(
         ..., 
         description="AI가 이 규칙을 어떻게 해석했는지 요약"
+    )
+
+    validation_axis: str = Field(
+        default="column",
+        description="검증 축 (행/열)"
     )
     
     confidence_score: float = Field(
@@ -388,39 +394,35 @@ class RuleUpdate(BaseModel):
 
 
 class RuleDetail(BaseModel):
-    """Detailed rule information for editing"""
+    """Detailed rule information for editing (시트명 제거됨 - 필드명 기반 관리)"""
     id: str
     rule_file_id: str
-    sheet_name: str
-    display_sheet_name: Optional[str]
-    canonical_sheet_name: Optional[str]
-    row_number: Optional[int]
-    column_letter: Optional[str]
+    row_number: Optional[str] = None  # 서브 인덱스 지원: "5", "5.1", "5.2"
+    column_letter: Optional[str] = None
     field_name: str
     rule_text: str
-    condition: Optional[str]
-    note: Optional[str]
+    condition: Optional[str] = None
+    note: Optional[str] = None
     is_common: bool = False  # Common rule flag
-    
+
     # AI Interpretation
-    ai_rule_id: Optional[str]
-    ai_rule_type: Optional[str]
-    ai_parameters: Optional[Dict[str, Any]]
-    ai_error_message: Optional[str]
-    ai_interpretation_summary: Optional[str]
-    ai_confidence_score: Optional[float]
-    ai_interpreted_at: Optional[datetime]
-    
+    ai_rule_id: Optional[str] = None
+    ai_rule_type: Optional[str] = None
+    ai_parameters: Optional[Dict[str, Any]] = None
+    ai_error_message: Optional[str] = None
+    ai_interpretation_summary: Optional[str] = None
+    ai_confidence_score: Optional[float] = None
+    ai_interpreted_at: Optional[datetime] = None
+
     is_active: bool
     created_at: datetime
     updated_at: datetime
 
 
 class RuleCreate(BaseModel):
-    """Request model for creating a single rule manually"""
+    """Request model for creating a single rule manually (시트명 제거됨)"""
     rule_file_id: str
-    sheet_name: str
-    row_number: int = 0
+    row_number: str = "0"  # 서브 인덱스 지원: "5", "5.1", "5.2"
     column_name: str  # mapped to field_name
     rule_text: str
     condition: Optional[str] = None

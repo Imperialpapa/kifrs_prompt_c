@@ -418,32 +418,32 @@ class RuleRepository:
             print(f"[RuleRepository] Error getting rules by file: {str(e)}")
             return []
 
-    async def get_rules_by_sheet(
+    async def get_rules_by_field(
         self,
         file_id: UUID,
-        canonical_sheet_name: str
+        field_name: str
     ) -> List[Dict]:
         """
-        Get rules for a specific sheet
+        Get rules for a specific field (필드명 기반 규칙 관리)
 
         Args:
             file_id: UUID of the rule file
-            canonical_sheet_name: Normalized sheet name
+            field_name: Field name to filter by
 
         Returns:
-            List[Dict]: List of rules for the sheet
+            List[Dict]: List of rules for the field
         """
         try:
             result = self.client.table('rules') \
                 .select('*') \
                 .eq('rule_file_id', str(file_id)) \
-                .eq('canonical_sheet_name', canonical_sheet_name) \
+                .eq('field_name', field_name) \
                 .eq('is_active', True) \
                 .execute()
 
             return result.data if result.data else []
         except Exception as e:
-            print(f"[RuleRepository] Error getting rules by sheet: {str(e)}")
+            print(f"[RuleRepository] Error getting rules by field: {str(e)}")
             return []
 
     async def update_rule_ai_interpretation(
@@ -485,18 +485,16 @@ class RuleRepository:
     async def update_rule_by_field(
         self,
         file_id: UUID,
-        sheet_name: str,
         field_name: str,
         ai_data: Dict[str, Any]
     ) -> bool:
         """
-        Update rule by matching file_id, sheet_name, and field_name
+        Update rule by matching file_id and field_name (시트명 제거됨)
 
         Used for caching AI interpretation when we don't have the rule UUID
 
         Args:
             file_id: UUID of the rule file
-            sheet_name: Canonical sheet name
             field_name: Field name
             ai_data: AI interpretation data
 
@@ -507,7 +505,6 @@ class RuleRepository:
             result = self.client.table('rules') \
                 .update(ai_data) \
                 .eq('rule_file_id', str(file_id)) \
-                .eq('canonical_sheet_name', sheet_name) \
                 .eq('field_name', field_name) \
                 .execute()
 
@@ -616,29 +613,29 @@ class RuleRepository:
 
     async def get_file_statistics(self, file_id: UUID) -> Dict[str, Any]:
         """
-        Get statistics for a rule file
+        Get statistics for a rule file (필드명 기반 통계)
 
         Args:
             file_id: UUID of the rule file
 
         Returns:
-            Dict: Statistics including rule count, sheet count, etc.
+            Dict: Statistics including rule count, field count, etc.
         """
         try:
             # Get rule count
             rules = await self.get_rules_by_file(file_id, active_only=True)
             rule_count = len(rules)
 
-            # Get unique sheets
-            sheets = set(rule.get('display_sheet_name') for rule in rules if rule.get('display_sheet_name'))
-            sheet_count = len(sheets)
+            # Get unique fields (시트 대신 필드 개수)
+            fields = set(rule.get('field_name') for rule in rules if rule.get('field_name'))
+            field_count = len(fields)
 
             # Get rules with AI interpretation
             interpreted_count = sum(1 for rule in rules if rule.get('ai_rule_id'))
 
             return {
                 'total_rules': rule_count,
-                'total_sheets': sheet_count,
+                'total_fields': field_count,
                 'interpreted_rules': interpreted_count,
                 'interpretation_rate': interpreted_count / rule_count if rule_count > 0 else 0
             }

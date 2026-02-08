@@ -56,7 +56,7 @@ from services.statistics_service import StatisticsService
 from services.fix_service import FixService
 from services.learning_service import LearningService
 from database.supabase_client import supabase
-from utils.excel_parser import parse_rules_from_excel, normalize_sheet_name, get_canonical_name
+from utils.excel_parser import parse_rules_from_excel, normalize_sheet_name, get_canonical_name, sanitize_sheet_name
 from utils.common import group_errors
 
 app = FastAPI(
@@ -74,18 +74,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 정적 파일 서빙 설정 (프론트엔드 분리 대응)
+# index.html이 위치한 상위 디렉토리와 frontend 디렉토리를 마운트
+if os.path.exists("../frontend"):
+    app.mount("/static", StaticFiles(directory="../frontend"), name="static")
+elif os.path.exists("frontend"):
+    app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
 # =============================================================================
-# 전역 서비스 레이어 초기화
+# 전역 서비스 레이어 초기화 (의존성 주입 적용)
 # =============================================================================
 
 ai_interpreter = AIRuleInterpreter()
-rule_service = RuleService()
-ai_cache_service = AICacheService()
+learning_service = LearningService(supabase_client=supabase)
+
+# AICacheService가 해석 로직의 중심 (learning_service 주입)
+ai_cache_service = AICacheService(
+    interpreter=ai_interpreter, 
+    learning_service=learning_service
+)
+
+# RuleService는 AICacheService를 사용하여 해석 (중복 제거)
+rule_service = RuleService(
+    ai_cache_service=ai_cache_service
+)
+
 validation_service = ValidationService()
 feedback_service = FeedbackService()
 statistics_service = StatisticsService()
 fix_service = FixService()
-learning_service = LearningService(supabase_client=supabase)
 
 # =============================================================================
 # 유틸리티 및 헬스체크 엔드포인트
@@ -239,10 +256,10 @@ async def validate_data(
         # Step 2: Excel B 읽기 (자연어 규칙)
         print("[Step 2] Reading validation rules...")
         rules_content = await rules_file.read()
-        natural_language_rules, sheet_row_counts, total_raw_rows, reported_max_row = parse_rules_from_excel(rules_content)
+        natural_language_rules, field_rule_counts, total_raw_rows, reported_max_row = parse_rules_from_excel(rules_content)
 
-        all_rule_sheets_display_unfiltered = sorted(list(sheet_row_counts.keys()))
-        all_rule_sheets_canonical_unfiltered = [get_canonical_name(name) for name in all_rule_sheets_display_unfiltered]
+        # 필드명 기반 규칙 관리 (시트명 제거됨)
+        all_rule_fields = sorted(list(field_rule_counts.keys()))
 
         # Step 3: AI 규칙 해석
         print(f"[Step 3] AI interpreting rules using {ai_provider}...")
@@ -251,42 +268,27 @@ async def validate_data(
             provider=ai_provider
         )
 
-        # Step 4: 결정론적 검증 실행
+        # Step 4: 결정론적 검증 실행 (필드 기반 - 모든 시트에 적용)
         print("[Step 4] Running deterministic validation...")
         validation_res = await validation_service.validate_sheets(sheet_data_map, ai_response.rules)
 
-        # Step 5: 응답 생성 및 메타데이터 추가
+        # Step 5: 응답 생성 및 메타데이터 추가 (필드 기반)
         from collections import Counter
-        rule_counts_by_canonical = Counter(rule.source.sheet_name for rule in ai_response.rules)
-
-        data_sheets_set = set(sheet_data_map.keys())
-        rule_sheets_set = set(all_rule_sheets_canonical_unfiltered)
-        
-        matched_sheets_set = data_sheets_set.intersection(rule_sheets_set)
-        unmatched_sheets_set = rule_sheets_set - data_sheets_set
-        
-        # 매칭 안 된 시트들의 Display Name 찾기
-        unmatched_sheet_names = []
-        for c_name in unmatched_sheets_set:
-            d_name = next((d for d in all_rule_sheets_display_unfiltered if get_canonical_name(d) == c_name), c_name)
-            unmatched_sheet_names.append(d_name)
 
         all_data_sheets = sorted(list(sheet_mapping_info.values()))
 
+        # 필드별 규칙 개수 표시
         display_list = []
-        for d_name in all_rule_sheets_display_unfiltered:
-            c_name = get_canonical_name(d_name)
-            raw_rows_in_sheet = sheet_row_counts.get(d_name, 0)
-            rule_count_in_sheet = rule_counts_by_canonical.get(c_name, 0)
-            display_list.append(f"{d_name} ({raw_rows_in_sheet}행 / {rule_count_in_sheet}규칙)")
+        for field_name in all_rule_fields:
+            rule_count = field_rule_counts.get(field_name, 0)
+            display_list.append(f"{field_name} ({rule_count}개 규칙)")
 
         matching_stats = {
-            "total_rule_sheets": len(all_rule_sheets_canonical_unfiltered),
-            "matched_sheets": len(matched_sheets_set),
-            "unmatched_sheet_names": unmatched_sheet_names,
-            "all_rule_sheets": display_list,
+            "total_rule_fields": len(all_rule_fields),
+            "matched_sheets": len(validation_res.metadata.get("sheets_summary", {})),
+            "all_rule_fields": display_list,
             "all_data_sheets": all_data_sheets,
-            "total_raw_rows": total_raw_rows, 
+            "total_raw_rows": total_raw_rows,
             "reported_max_row": reported_max_row,
             "total_rules_count": len(ai_response.rules)
         }
@@ -296,46 +298,42 @@ async def validate_data(
         # 실제 사용된 엔진 확인
         actual_model = "local-parser" if not ai_interpreter.use_cloud_ai else f"cloud-{ai_provider}"
 
-        # --- Rule-specific Status Calculation ---
-        from collections import Counter
-        error_counts_by_rule = Counter(err.rule_id for err in validation_res.errors)
-        
-        # Create column order map for each sheet
-        column_order_map = {}
+        # --- Rule-specific Status Calculation (Sheet-specific) ---
+        error_counts_by_sheet_rule = Counter((err.sheet, err.rule_id) for err in validation_res.errors)
+
+        rules_by_sheet = {}
         for c_name, data in sheet_data_map.items():
-            column_order_map[c_name] = {col: idx for idx, col in enumerate(data['df'].columns)}
-
-        rules_validation_status = []
-        for rule in ai_response.rules:
-            err_count = error_counts_by_rule.get(rule.rule_id, 0)
-            status_msg = "검증 100% 완료!" if err_count == 0 else f"{err_count}건의 수정 필요사항 발견"
+            sheet_name = data['display_name']
+            sheet_rules = []
             
-            # Frontend uses display_name (from sheet_data_map values) for tabs.
-            # We must ensure rule.sheet_name matches that.
-            rule_canonical = get_canonical_name(rule.source.sheet_name)
-            display_sheet_name = sheet_data_map.get(rule_canonical, {}).get("display_name", rule.source.sheet_name)
-
-            # Get column index for sorting
-            col_idx = 9999
-            if rule_canonical in column_order_map:
-                col_idx = column_order_map[rule_canonical].get(rule.field_name, 9999)
-
-            rules_validation_status.append({
-                "rule_id": rule.rule_id,
-                "field_name": rule.field_name,
-                "rule_text": rule.source.original_text,
-                "sheet_name": display_sheet_name,
-                "error_count": err_count,
-                "status_message": status_msg,
-                "column_index": col_idx
-            })
-        
-        # Sort by sheet name then column index
-        rules_validation_status.sort(key=lambda x: (x['sheet_name'], x['column_index']))
+            # FieldMatcher를 사용하여 이 시트에 실제로 적용된 매핑 확인
+            sheet_columns = [str(col) for col in data["df"].columns]
+            from utils.field_matcher import FieldMatcher
+            matcher = FieldMatcher()
+            field_mapping = matcher.match_rules_to_columns(ai_response.rules, sheet_columns)
+            
+            for rule in ai_response.rules:
+                if rule.field_name in field_mapping:
+                    mapped_col = field_mapping[rule.field_name]
+                    err_count = error_counts_by_sheet_rule.get((sheet_name, rule.rule_id), 0)
+                    status_msg = "검증 100% 완료!" if err_count == 0 else f"{err_count}건의 수정 필요사항 발견"
+                    
+                    sheet_rules.append({
+                        "rule_id": rule.rule_id,
+                        "field_name": mapped_col,
+                        "rule_text": rule.source.original_text,
+                        "error_count": err_count,
+                        "status_message": status_msg,
+                        "column_index": column_order_map[c_name].get(mapped_col, 999)
+                    })
+            
+            sheet_rules.sort(key=lambda x: x['column_index'])
+            rules_by_sheet[sheet_name] = sheet_rules
             
         # --- AI Role Summary Generation ---
+        matched_fields_count = len(all_rule_fields)
         ai_summary_text = (
-            f"AI는 {len(ai_response.rules)}개의 자연어 규칙을 해석하여 {len(matched_sheets_set)}개의 시트에 자동 매핑했습니다. "
+            f"AI는 {len(ai_response.rules)}개의 자연어 규칙을 해석하여 {matched_fields_count}개의 필드에 적용했습니다. "
             f"총 {validation_res.summary.total_rows}행의 데이터를 검증하는 과정에서 "
             f"{len(ai_response.conflicts)}건의 규칙 충돌 가능성을 분석하고, "
             f"{validation_res.summary.total_errors}건의 데이터 오류를 식별했습니다."
@@ -352,7 +350,7 @@ async def validate_data(
             "error_groups_count": len(validation_res.error_groups),
             "matching_stats": matching_stats,
             "sheet_order": [data["display_name"] for data in sheet_data_map.values()],
-            "rules_validation_status": rules_validation_status,
+            "rules_by_sheet": rules_by_sheet,
             "ai_role_summary": ai_summary_text
         })
 
@@ -602,7 +600,7 @@ async def update_rule_mapping(rule_id: str, mapping_data: dict):
                 "sheet_name": str,
                 "field_name": str,
                 "rule_text": str,
-                "row_number": int,
+                "row_number": str,  # 서브 인덱스 지원: "5", "5.1", "5.2"
                 "column_letter": str,
                 // AI 매핑 데이터 (optional)
                 "ai_rule_type": str,
@@ -713,12 +711,12 @@ async def reinterpret_single_rule(rule_id: str, use_local_parser: bool = True):
                 detail={"error": "Rule not found"}
             )
 
-        # AI 재해석 수행 (Smart Interpret: 학습된 패턴 우선)
+        # AI 재해석 수행 (Bypass learning to force a fresh interpretation)
         interpretation, source = await learning_service.smart_interpret(
             rule_text=rule.get("rule_text", ""),
             field_name=rule.get("field_name", ""),
             ai_interpreter=ai_interpreter,
-            use_learning=True  # 학습된 패턴 활용
+            use_learning=False  # 재해석 시에는 기존 학습 내용을 무시하고 강제 재실행
         )
         
         # 로컬 파서 강제 사용 시 덮어쓰기 (단, 학습된 패턴이 정확히 매칭된 경우는 유지 가능하나, 
@@ -1474,7 +1472,6 @@ async def download_validation_results(validation_response: ValidationResponse):
                 for rule in validation_response.rules_applied:
                     rules_data.append({
                         "규칙ID": _safe_str(rule.rule_id),
-                        "시트명": _safe_str(rule.source.sheet_name),
                         "필드명": _safe_str(rule.field_name),
                         "규칙 유형": _safe_str(rule.rule_type),
                         "파라미터": _safe_str(rule.parameters, 500),
@@ -1509,6 +1506,139 @@ async def download_validation_results(validation_response: ValidationResponse):
                 "error": "Failed to generate Excel file",
                 "message": str(e)
             }
+        )
+
+
+# =============================================================================
+# Phase 10: AI Smart Analysis Endpoints
+# =============================================================================
+
+@app.post("/ai/cross-field-analysis")
+async def cross_field_analysis(
+    employee_file: UploadFile = File(..., description="직원 데이터 파일"),
+    ai_provider: str = Form("openai", description="AI Provider")
+):
+    """
+    크로스필드 논리 모순 탐지
+
+    데이터의 필드 간 관계를 AI가 추론하여 논리적 모순을 자동 발견합니다.
+    규칙 파일 없이 데이터만으로 동작합니다.
+    """
+    try:
+        print(f"[AI] Cross-field analysis requested (provider: {ai_provider})")
+        content = await employee_file.read()
+
+        from utils.excel_parser import get_visible_sheet_names
+        visible_sheets = get_visible_sheet_names(content)
+
+        sheet_data_samples = {}
+        column_names = {}
+
+        for sheet_name in visible_sheets:
+            df = pd.read_excel(io.BytesIO(content), sheet_name=sheet_name)
+
+            # 빈 행 제거
+            df = df.dropna(how='all')
+
+            cols = [str(c) for c in df.columns]
+            column_names[sheet_name] = cols
+
+            # 샘플 데이터 (최대 50행)
+            samples = []
+            for idx, row in df.head(50).iterrows():
+                row_dict = {}
+                for col in cols:
+                    val = row[col]
+                    if pd.notna(val):
+                        row_dict[col] = val
+                row_dict["__row_number__"] = idx + 2  # Excel 1-based + header
+                samples.append(row_dict)
+
+            sheet_data_samples[sheet_name] = samples
+
+        result = await ai_interpreter.analyze_cross_field(
+            sheet_data_samples, column_names, provider=ai_provider
+        )
+
+        print(f"[AI] Cross-field analysis complete: {result.get('total_issues', 0)} issues found")
+        return result
+
+    except Exception as e:
+        print(f"[AI] Cross-field analysis error: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Cross-field analysis failed", "message": str(e)}
+        )
+
+
+@app.post("/ai/data-profile")
+async def data_profile(
+    employee_file: UploadFile = File(..., description="직원 데이터 파일"),
+    ai_provider: str = Form("openai", description="AI Provider")
+):
+    """
+    AI 데이터 프로파일링 (Zero-Rule Anomaly Scan)
+
+    규칙 파일 없이 데이터만 업로드하면 이상치, 형식 불일치, 결측 패턴, 중복 의심 등을 자동 탐지합니다.
+    """
+    try:
+        print(f"[AI] Data profiling requested (provider: {ai_provider})")
+        content = await employee_file.read()
+
+        from utils.excel_parser import get_visible_sheet_names
+        visible_sheets = get_visible_sheet_names(content)
+
+        sheet_data_samples = {}
+        column_names = {}
+        sheet_stats = {}
+
+        for sheet_name in visible_sheets:
+            df = pd.read_excel(io.BytesIO(content), sheet_name=sheet_name)
+            df = df.dropna(how='all')
+
+            cols = [str(c) for c in df.columns]
+            column_names[sheet_name] = cols
+
+            # 통계 정보 수집
+            null_counts = {}
+            for col in cols:
+                null_count = int(df[col].isna().sum())
+                empty_count = int((df[col].astype(str).str.strip().isin(['', 'None', 'nan', 'NaT'])).sum())
+                null_counts[col] = null_count + empty_count
+
+            sheet_stats[sheet_name] = {
+                "total_rows": len(df),
+                "columns_count": len(cols),
+                "null_counts": null_counts
+            }
+
+            # 샘플 데이터 (최대 50행)
+            samples = []
+            for idx, row in df.head(50).iterrows():
+                row_dict = {}
+                for col in cols:
+                    val = row[col]
+                    if pd.notna(val):
+                        row_dict[col] = val
+                row_dict["__row_number__"] = idx + 2
+                samples.append(row_dict)
+
+            sheet_data_samples[sheet_name] = samples
+
+        result = await ai_interpreter.analyze_data_profile(
+            sheet_data_samples, column_names, sheet_stats, provider=ai_provider
+        )
+
+        print(f"[AI] Data profiling complete: health_score={result.get('health_score')}, findings={len(result.get('findings', []))}")
+        return result
+
+    except Exception as e:
+        print(f"[AI] Data profiling error: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Data profiling failed", "message": str(e)}
         )
 
 
